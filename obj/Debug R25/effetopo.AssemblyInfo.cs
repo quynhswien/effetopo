@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("effetopo")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug R25")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+699087c7fe0b5c7e44dd5def5cd9e73300bf5257")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+57e928b21620b028402b80ef54dce3069884b49b")]
 [assembly: System.Reflection.AssemblyProductAttribute("effetopo")]
 [assembly: System.Reflection.AssemblyTitleAttribute("effetopo")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

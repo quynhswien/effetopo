@@ -163,78 +163,15 @@ namespace effetopo.Commands
                 Log.Information("User chose to use Existing reference points on Proposal surface: {UseExistingReference}",
                     useExistingReferencePointsOnProposalSurface);
 
-                // Boundary cleanup offset: remove/ignore existing points in an outside band near proposal boundary.
+                // Boundary cleanup offset dialog (preset + custom in one screen).
                 bool useMillimeters = IsProjectUsingMillimeters(doc);
-                var cleanupOffsetDialog = new TaskDialog("Boundary Cleanup Offset");
-                cleanupOffsetDialog.MainInstruction = "Select Boundary Cleanup Offset";
-                cleanupOffsetDialog.MainContent =
-                    "Existing points in the outside offset band near Proposal boundary will be removed/ignored to avoid Toposolid errors.\n\n" +
-                    "Outside this band, Existing points are preserved.";
-                if (useMillimeters)
-                {
-                    cleanupOffsetDialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "300 mm", "Default");
-                    cleanupOffsetDialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "1500 mm", "");
-                    cleanupOffsetDialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink3, "3000 mm", "");
-                    cleanupOffsetDialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink4, "4500 mm", "");
-                }
-                else
-                {
-                    cleanupOffsetDialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink1, "1'", "Default");
-                    cleanupOffsetDialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink2, "5'", "");
-                    cleanupOffsetDialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink3, "10'", "");
-                    cleanupOffsetDialog.AddCommandLink(TaskDialogCommandLinkId.CommandLink4, "15'", "");
-                }
-                cleanupOffsetDialog.CommonButtons = TaskDialogCommonButtons.Cancel;
-                cleanupOffsetDialog.DefaultButton = TaskDialogResult.CommandLink1;
-
-                TaskDialogResult cleanupOffsetResult = cleanupOffsetDialog.Show();
-                if (cleanupOffsetResult == TaskDialogResult.Cancel)
+                var cleanupDialog = new Views.BoundaryCleanupOffsetDialog(useMillimeters);
+                bool? cleanupDialogResult = cleanupDialog.ShowDialog();
+                if (cleanupDialogResult != true || !cleanupDialog.SelectedOffsetFeet.HasValue)
                 {
                     return Result.Cancelled;
                 }
-
-                double boundaryCleanupOffsetFeet = 1.0;
-                if (useMillimeters)
-                {
-#if REVIT2024_OR_GREATER
-                    if (cleanupOffsetResult == TaskDialogResult.CommandLink2) boundaryCleanupOffsetFeet = UnitUtils.ConvertToInternalUnits(1500.0, UnitTypeId.Millimeters);
-                    else if (cleanupOffsetResult == TaskDialogResult.CommandLink3) boundaryCleanupOffsetFeet = UnitUtils.ConvertToInternalUnits(3000.0, UnitTypeId.Millimeters);
-                    else if (cleanupOffsetResult == TaskDialogResult.CommandLink4) boundaryCleanupOffsetFeet = UnitUtils.ConvertToInternalUnits(4500.0, UnitTypeId.Millimeters);
-                    else boundaryCleanupOffsetFeet = UnitUtils.ConvertToInternalUnits(300.0, UnitTypeId.Millimeters);
-#else
-                    if (cleanupOffsetResult == TaskDialogResult.CommandLink2) boundaryCleanupOffsetFeet = UnitUtils.ConvertToInternalUnits(1500.0, DisplayUnitType.DUT_MILLIMETERS);
-                    else if (cleanupOffsetResult == TaskDialogResult.CommandLink3) boundaryCleanupOffsetFeet = UnitUtils.ConvertToInternalUnits(3000.0, DisplayUnitType.DUT_MILLIMETERS);
-                    else if (cleanupOffsetResult == TaskDialogResult.CommandLink4) boundaryCleanupOffsetFeet = UnitUtils.ConvertToInternalUnits(4500.0, DisplayUnitType.DUT_MILLIMETERS);
-                    else boundaryCleanupOffsetFeet = UnitUtils.ConvertToInternalUnits(300.0, DisplayUnitType.DUT_MILLIMETERS);
-#endif
-                }
-                else
-                {
-                    if (cleanupOffsetResult == TaskDialogResult.CommandLink2) boundaryCleanupOffsetFeet = 5.0;
-                    else if (cleanupOffsetResult == TaskDialogResult.CommandLink3) boundaryCleanupOffsetFeet = 10.0;
-                    else if (cleanupOffsetResult == TaskDialogResult.CommandLink4) boundaryCleanupOffsetFeet = 15.0;
-                    else boundaryCleanupOffsetFeet = 1.0;
-                }
-                var customCleanupResult = System.Windows.MessageBox.Show(
-                    useMillimeters
-                        ? "Do you want to enter a custom cleanup offset value in millimeters?"
-                        : "Do you want to enter a custom cleanup offset value in feet?",
-                    "Custom Cleanup Offset",
-                    System.Windows.MessageBoxButton.YesNoCancel,
-                    System.Windows.MessageBoxImage.Question);
-                if (customCleanupResult == System.Windows.MessageBoxResult.Cancel)
-                {
-                    return Result.Cancelled;
-                }
-                if (customCleanupResult == System.Windows.MessageBoxResult.Yes)
-                {
-                    double? customOffsetFeet = PromptForCustomCleanupOffsetFeet(useMillimeters);
-                    if (!customOffsetFeet.HasValue)
-                    {
-                        return Result.Cancelled;
-                    }
-                    boundaryCleanupOffsetFeet = customOffsetFeet.Value;
-                }
+                double boundaryCleanupOffsetFeet = cleanupDialog.SelectedOffsetFeet.Value;
                 Log.Information("User selected boundary cleanup offset: {OffsetFeet} feet", boundaryCleanupOffsetFeet);
 
                 // Ask if user wants to delete proposal after merge
@@ -351,41 +288,6 @@ namespace effetopo.Commands
 #else
             return id?.IntegerValue.ToString() ?? "null";
 #endif
-        }
-
-        private static double? PromptForCustomCleanupOffsetFeet(bool useMillimeters)
-        {
-            string unitLabel = useMillimeters ? "mm" : "feet";
-            string defaultValue = useMillimeters ? "300" : "1";
-            string input = Microsoft.VisualBasic.Interaction.InputBox(
-                $"Enter Boundary Cleanup Offset ({unitLabel}):",
-                "Custom Boundary Cleanup Offset",
-                defaultValue);
-
-            if (string.IsNullOrWhiteSpace(input))
-            {
-                return null;
-            }
-
-            string normalizedInput = input.Trim().Replace(",", ".");
-            if (!double.TryParse(normalizedInput, System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double value) || value <= 0)
-            {
-                RevitNotificationHandler.ShowGeneralMessageDialog("Invalid value",
-                    $"Please enter a positive numeric value in {unitLabel}.");
-                return null;
-            }
-
-            if (useMillimeters)
-            {
-#if REVIT2024_OR_GREATER
-                return UnitUtils.ConvertToInternalUnits(value, UnitTypeId.Millimeters);
-#else
-                return UnitUtils.ConvertToInternalUnits(value, DisplayUnitType.DUT_MILLIMETERS);
-#endif
-            }
-
-            return value;
         }
 
         private static bool IsProjectUsingMillimeters(Document doc)

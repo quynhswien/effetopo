@@ -1,0 +1,53 @@
+<Window
+    x:Class="effetopo.Views.BoundaryCleanupOffsetDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    ResizeMode="NoResize"
+    WindowStartupLocation="CenterScreen"
+    Title="Boundary Cleanup Offset"
+    Height="420"
+    Width="640"
+    MinHeight="420"
+    MinWidth="640">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" FontSize="18" FontWeight="SemiBold" Text="Select Boundary Cleanup Offset"/>
+        <TextBlock Grid.Row="1" Margin="0,8,0,16" TextWrapping="Wrap">
+            Existing points in the outside offset band near Proposal boundary will be removed/ignored to avoid Toposolid errors.
+            Outside this band, Existing points are preserved.
+        </TextBlock>
+
+        <StackPanel Grid.Row="2">
+            <StackPanel.Resources>
+                <Style TargetType="{x:Type RadioButton}">
+                    <Setter Property="Margin" Value="0,6,0,0"/>
+                    <Setter Property="FontSize" Value="14"/>
+                </Style>
+            </StackPanel.Resources>
+
+            <RadioButton x:Name="Preset1" GroupName="CleanupOffsetOptions" IsChecked="True"/>
+            <RadioButton x:Name="Preset2" GroupName="CleanupOffsetOptions"/>
+            <RadioButton x:Name="Preset3" GroupName="CleanupOffsetOptions"/>
+            <RadioButton x:Name="Preset4" GroupName="CleanupOffsetOptions"/>
+
+            <StackPanel Margin="0,10,0,0">
+                <RadioButton x:Name="CustomOption" GroupName="CleanupOffsetOptions" Content="Custom"/>
+                <DockPanel Margin="24,6,0,0" LastChildFill="False">
+                    <TextBox x:Name="CustomValueTextBox" Width="220" Height="28" IsEnabled="False" VerticalContentAlignment="Center"/>
+                    <TextBlock x:Name="CustomUnitText" Margin="10,4,0,0" VerticalAlignment="Center"/>
+                </DockPanel>
+            </StackPanel>
+        </StackPanel>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Width="90" Margin="0,0,10,0" IsDefault="True" Click="Ok_Click">OK</Button>
+            <Button Width="90" IsCancel="True" Click="Cancel_Click">Cancel</Button>
+        </StackPanel>
+    </Grid>
+</Window>
