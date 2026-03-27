@@ -1165,6 +1165,12 @@ namespace effetopo.Services
                     Log.Information("Existing Toposolid boundary: X[{MinX}, {MaxX}], Y[{MinY}, {MaxY}]",
                         existingMinX, existingMaxX, existingMinY, existingMaxY);
 
+                    // Snapshot of REAL editable vertices (SlabShapeEditor vertices) before any change.
+                    // We preserve these by default, except points explicitly targeted by update/delete rules.
+                    var existingEditableVerticesSnapshot = GetExistingEditableVertices(existingToposolid);
+                    Log.Information("Captured {Count} editable Existing vertices snapshot for preservation logic.",
+                        existingEditableVerticesSnapshot.Count);
+
                     // Create XY map of existing points for quick lookup
                     var existingXYMap = new Dictionary<string, XYZ>();
                     foreach (var existingPoint in existingPoints)
@@ -1208,11 +1214,8 @@ namespace effetopo.Services
                     int pointsOutsideBoundary = 0;
                     int pointsNoIntersection = 0;
 
-                    var existingPointsInProposalBoundary = existingPoints.Where(p => p != null &&
-                        p.X >= proposalMinX - boundaryTolerance &&
-                        p.X <= proposalMaxX + boundaryTolerance &&
-                        p.Y >= proposalMinY - boundaryTolerance &&
-                        p.Y <= proposalMaxY + boundaryTolerance).ToList();
+                    var existingPointsInProposalBoundary = existingPoints.Where(p =>
+                        p != null && IsPointOnProposalSurfaceXY(p, spatialGrid)).ToList();
 
                     pointsOutsideBoundary = existingPoints.Count - existingPointsInProposalBoundary.Count;
                     Log.Information("Filtered to {InBoundaryCount} existing points within proposal boundary ({OutsideCount} outside)",
@@ -1277,11 +1280,7 @@ namespace effetopo.Services
                             interiorCleanupEditor.Enable();
                             existingInsideProposalPointsDeleted = DeleteExistingPointsInProposalBoundary(
                                 interiorCleanupEditor,
-                                proposalMinX,
-                                proposalMaxX,
-                                proposalMinY,
-                                proposalMaxY,
-                                boundaryTolerance);
+                                spatialGrid);
                         }
                         Log.Information("Step 1B: Deleted {Count} Existing points inside Proposal boundary (No Existing reference mode).",
                             existingInsideProposalPointsDeleted);
@@ -1330,26 +1329,10 @@ namespace effetopo.Services
                                     continue;
                                 }
 
-                                string xyKey = GetXYKey(proposalPoint, xyTolerance);
-                                if (existingXYMap.ContainsKey(xyKey))
-                                {
-                                    XYZ existingPointAtSameXY = existingXYMap[xyKey];
-                                    if (Math.Abs(existingPointAtSameXY.Z - strictProposalZ.Value) > 0.01)
-                                    {
-                                        proposalPointUpdates.Add(new PointUpdate
-                                        {
-                                            OriginalPoint = existingPointAtSameXY,
-                                            NewZ = strictProposalZ.Value,
-                                            IsNewPoint = false
-                                        });
-                                        proposalPointsToAdd++;
-                                    }
-                                    else
-                                    {
-                                        proposalPointsSameAsExisting++;
-                                    }
-                                }
-                                else
+                                // NO mode: use ONLY Proposal points inside Proposal boundary (as NEW points).
+                                // Existing points inside Proposal boundary are deleted in Step 1B,
+                                // so there must be NO "existing point updates" in this mode.
+                                if (!useExistingReferencePointsOnProposalSurface)
                                 {
                                     proposalPointUpdates.Add(new PointUpdate
                                     {
@@ -1358,6 +1341,39 @@ namespace effetopo.Services
                                         IsNewPoint = true
                                     });
                                     proposalPointsToAdd++;
+                                }
+                                else
+                                {
+                                    // YES mode: if Existing has a vertex at same XY, update it; otherwise add new.
+                                    string xyKey = GetXYKey(proposalPoint, xyTolerance);
+                                    if (existingXYMap.ContainsKey(xyKey))
+                                    {
+                                        XYZ existingPointAtSameXY = existingXYMap[xyKey];
+                                        if (Math.Abs(existingPointAtSameXY.Z - strictProposalZ.Value) > 0.01)
+                                        {
+                                            proposalPointUpdates.Add(new PointUpdate
+                                            {
+                                                OriginalPoint = existingPointAtSameXY,
+                                                NewZ = strictProposalZ.Value,
+                                                IsNewPoint = false
+                                            });
+                                            proposalPointsToAdd++;
+                                        }
+                                        else
+                                        {
+                                            proposalPointsSameAsExisting++;
+                                        }
+                                    }
+                                    else
+                                    {
+                                        proposalPointUpdates.Add(new PointUpdate
+                                        {
+                                            OriginalPoint = proposalPoint,
+                                            NewZ = strictProposalZ.Value,
+                                            IsNewPoint = true
+                                        });
+                                        proposalPointsToAdd++;
+                                    }
                                 }
                             }
                             catch (Exception ex)
@@ -1383,16 +1399,11 @@ namespace effetopo.Services
                     bool cleanupEnabled = cleanupOffset > 0.0;
                     if (cleanupEnabled)
                     {
+                        var proposalXYSeeds = proposalPointsTopOnly ?? new List<XYZ>();
                         var existingBoundaryBandPoints = existingPoints.Where(p =>
                             p != null &&
-                            p.X >= proposalMinX - cleanupOffset - boundaryTolerance &&
-                            p.X <= proposalMaxX + cleanupOffset + boundaryTolerance &&
-                            p.Y >= proposalMinY - cleanupOffset - boundaryTolerance &&
-                            p.Y <= proposalMaxY + cleanupOffset + boundaryTolerance &&
-                            !(p.X >= proposalMinX - boundaryTolerance &&
-                              p.X <= proposalMaxX + boundaryTolerance &&
-                              p.Y >= proposalMinY - boundaryTolerance &&
-                              p.Y <= proposalMaxY + boundaryTolerance)).ToList();
+                            !IsPointOnProposalSurfaceXY(p, spatialGrid) &&
+                            IsWithinOffsetFromProposalXY(p, proposalXYSeeds, cleanupOffset)).ToList();
 
                         existingBoundaryBandPointsIgnored = existingBoundaryBandPoints.Count;
                         Log.Information("Step 3: Boundary cleanup band identified {Count} Existing points to remove/ignore (offset {Offset} ft).",
@@ -1403,7 +1414,7 @@ namespace effetopo.Services
                         {
                             cleanupEditor.Enable();
                             existingBoundaryBandPointsDeleted = DeleteExistingPointsInBand(cleanupEditor,
-                                proposalMinX, proposalMaxX, proposalMinY, proposalMaxY, cleanupOffset, boundaryTolerance);
+                                spatialGrid, proposalXYSeeds, cleanupOffset);
                         }
                     }
                     else
@@ -1516,6 +1527,44 @@ namespace effetopo.Services
                                 pointsSkipped++;
                             }
                         }
+
+                        // Re-apply preserved points (all original editable vertices except explicitly targeted ones).
+                        // This protects unaffected Existing area from unintended triangulation/elevation drift.
+                        var targetedKeys = new HashSet<string>();
+                        foreach (var pointUpdate in pointsToAddOrUpdate)
+                        {
+                            if (pointUpdate?.OriginalPoint == null) continue;
+                            try { targetedKeys.Add(GetXYKey(pointUpdate.OriginalPoint, xyTolerance)); } catch { }
+                        }
+
+                        int preservedPointsReapplied = 0;
+                        foreach (var preservedPoint in existingEditableVerticesSnapshot)
+                        {
+                            if (preservedPoint == null) continue;
+                            bool inProposalBoundary = IsPointOnProposalSurfaceXY(preservedPoint, spatialGrid);
+                            bool inCleanupBand = !inProposalBoundary &&
+                                IsWithinOffsetFromProposalXY(preservedPoint, proposalPointsTopOnly, cleanupOffset);
+
+                            // Skip re-apply if point is intentionally modified/deleted by current rules.
+                            if (inCleanupBand) continue;
+                            if (!useExistingReferencePointsOnProposalSurface && inProposalBoundary) continue;
+                            string preserveKey;
+                            try { preserveKey = GetXYKey(preservedPoint, xyTolerance); } catch { continue; }
+                            if (targetedKeys.Contains(preserveKey)) continue;
+
+                            try
+                            {
+                                editor.AddPoint(new XYZ(preservedPoint.X, preservedPoint.Y, preservedPoint.Z));
+                                preservedPointsReapplied++;
+                            }
+                            catch (Exception ex)
+                            {
+                                Log.Debug("Could not re-apply preserved Existing point at ({X}, {Y}) Z={Z}: {Error}",
+                                    preservedPoint.X, preservedPoint.Y, preservedPoint.Z, ex.Message);
+                            }
+                        }
+                        Log.Information("Re-applied {Count} preserved Existing points outside impacted area.",
+                            preservedPointsReapplied);
 
                         // Store statistics for user notification
                         LastMergePointsAdded = pointsAdded;
@@ -2612,12 +2661,9 @@ namespace effetopo.Services
 
         private int DeleteExistingPointsInBand(
             SlabShapeEditor editor,
-            double proposalMinX,
-            double proposalMaxX,
-            double proposalMinY,
-            double proposalMaxY,
-            double cleanupOffset,
-            double tolerance)
+            SpatialGrid proposalSpatialGrid,
+            List<XYZ> proposalXYSeeds,
+            double cleanupOffset)
         {
             if (editor == null || editor.SlabShapeVertices == null || cleanupOffset <= 0.0)
             {
@@ -2645,16 +2691,11 @@ namespace effetopo.Services
                     XYZ p = vertex?.Position;
                     if (p == null) continue;
 
-                    bool isInsideProposal = p.X >= proposalMinX - tolerance &&
-                                            p.X <= proposalMaxX + tolerance &&
-                                            p.Y >= proposalMinY - tolerance &&
-                                            p.Y <= proposalMaxY + tolerance;
-                    bool isInsideCleanupOffsetBox = p.X >= proposalMinX - cleanupOffset - tolerance &&
-                                                    p.X <= proposalMaxX + cleanupOffset + tolerance &&
-                                                    p.Y >= proposalMinY - cleanupOffset - tolerance &&
-                                                    p.Y <= proposalMaxY + cleanupOffset + tolerance;
+                    bool isInsideProposal = IsPointOnProposalSurfaceXY(p, proposalSpatialGrid);
+                    bool isInsideCleanupOffsetBand = !isInsideProposal &&
+                        IsWithinOffsetFromProposalXY(p, proposalXYSeeds, cleanupOffset);
 
-                    if (!isInsideProposal && isInsideCleanupOffsetBox)
+                    if (isInsideCleanupOffsetBand)
                     {
                         try
                         {
@@ -2677,13 +2718,43 @@ namespace effetopo.Services
             return deleted;
         }
 
+        private List<XYZ> GetExistingEditableVertices(
+#if REVIT2024_OR_GREATER
+            Toposolid toposolid
+#else
+            Element toposolid
+#endif
+            )
+        {
+#if !REVIT2024_OR_GREATER
+            throw new NotSupportedException("Toposolid is only available in Revit 2024 and later");
+#else
+            var result = new List<XYZ>();
+            try
+            {
+                SlabShapeEditor editor = toposolid.GetSlabShapeEditor();
+                if (editor?.SlabShapeVertices != null)
+                {
+                    foreach (SlabShapeVertex v in editor.SlabShapeVertices)
+                    {
+                        if (v?.Position != null)
+                        {
+                            result.Add(v.Position);
+                        }
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not read Existing editable vertices snapshot.");
+            }
+            return result;
+#endif
+        }
+
         private int DeleteExistingPointsInProposalBoundary(
             SlabShapeEditor editor,
-            double proposalMinX,
-            double proposalMaxX,
-            double proposalMinY,
-            double proposalMaxY,
-            double tolerance)
+            SpatialGrid proposalSpatialGrid)
         {
             if (editor == null || editor.SlabShapeVertices == null)
             {
@@ -2711,10 +2782,7 @@ namespace effetopo.Services
                     XYZ p = vertex?.Position;
                     if (p == null) continue;
 
-                    bool isInsideProposal = p.X >= proposalMinX - tolerance &&
-                                            p.X <= proposalMaxX + tolerance &&
-                                            p.Y >= proposalMinY - tolerance &&
-                                            p.Y <= proposalMaxY + tolerance;
+                    bool isInsideProposal = IsPointOnProposalSurfaceXY(p, proposalSpatialGrid);
                     if (!isInsideProposal)
                     {
                         continue;
@@ -2738,6 +2806,34 @@ namespace effetopo.Services
             }
 
             return deleted;
+        }
+
+        private bool IsPointOnProposalSurfaceXY(XYZ point, SpatialGrid proposalSpatialGrid)
+        {
+            if (point == null || proposalSpatialGrid == null) return false;
+            // Strict membership: no nearest-triangle fallback.
+            return GetElevationAtPointOptimized(point, proposalSpatialGrid, allowFallback: false).HasValue;
+        }
+
+        private bool IsWithinOffsetFromProposalXY(XYZ point, List<XYZ> proposalXYSeeds, double offset)
+        {
+            if (point == null || proposalXYSeeds == null || proposalXYSeeds.Count == 0 || offset <= 0.0)
+            {
+                return false;
+            }
+
+            double maxDistSq = offset * offset;
+            foreach (var seed in proposalXYSeeds)
+            {
+                if (seed == null) continue;
+                double dx = point.X - seed.X;
+                double dy = point.Y - seed.Y;
+                if ((dx * dx + dy * dy) <= maxDistSq)
+                {
+                    return true;
+                }
+            }
+            return false;
         }
 
         /// <summary>
