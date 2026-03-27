@@ -1,0 +1,65 @@
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.csproj.AssemblyReference.cache
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\DownloadUpdateView.g.cs
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\effetopo.g.cs
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\LicenseActivationView.g.cs
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\LicenseWarningView.g.cs
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\GeneratedInternalTypeHelper.g.cs
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo_MarkupCompile.cache
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo_MarkupCompile.lref
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\effetopo.deps.json
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\effetopo.dll
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\effetopo.pdb
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\CommunityToolkit.Mvvm.dll
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\JetBrains.Annotations.dll
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\Newtonsoft.Json.dll
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\Nice3point.Revit.Extensions.dll
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\Nice3point.Revit.Toolkit.dll
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\System.Management.dll
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\runtimes\win\lib\net8.0\System.Management.dll
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\DownloadUpdateView.baml
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\effetopo.baml
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\LicenseActivationView.baml
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\LicenseWarningView.baml
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.g.resources
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.GeneratedMSBuildEditorConfig.editorconfig
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.AssemblyInfoInputs.cache
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.AssemblyInfo.cs
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.csproj.CoreCompileInputs.cache
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.sourcelink.json
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.csproj.Up2Date
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.dll
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\refint\effetopo.dll
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.pdb
+E:\SynologyDrive\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\ref\effetopo.dll
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\effetopo.deps.json
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\effetopo.dll
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\effetopo.pdb
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\CommunityToolkit.Mvvm.dll
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\JetBrains.Annotations.dll
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\Newtonsoft.Json.dll
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\Nice3point.Revit.Extensions.dll
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\Nice3point.Revit.Toolkit.dll
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\System.Management.dll
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\bin\Debug R25\runtimes\win\lib\net8.0\System.Management.dll
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.csproj.AssemblyReference.cache
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\DownloadUpdateView.g.cs
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\effetopo.g.cs
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\LicenseActivationView.g.cs
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\LicenseWarningView.g.cs
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\GeneratedInternalTypeHelper.g.cs
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo_MarkupCompile.cache
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo_MarkupCompile.lref
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\DownloadUpdateView.baml
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\effetopo.baml
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\LicenseActivationView.baml
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\LicenseWarningView.baml
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.g.resources
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.GeneratedMSBuildEditorConfig.editorconfig
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.AssemblyInfoInputs.cache
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.AssemblyInfo.cs
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.csproj.CoreCompileInputs.cache
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.csproj.Up2Date
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.dll
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\refint\effetopo.dll
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.pdb
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\ref\effetopo.dll

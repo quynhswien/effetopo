@@ -1,0 +1,11 @@
+﻿<RevitAddIns>
+    <AddIn Type="Application">
+        <Name>effetopo</Name>
+        <Assembly>effetopo/effetopo.dll</Assembly>
+        <AddInId>973bf4d7-6f58-48dd-a452-e9efa437600a</AddInId>
+        <FullClassName>effetopo.Application</FullClassName>
+        <VendorId>Development</VendorId>
+        <VendorDescription>EFFE</VendorDescription>
+        <VendorEmail>effe.revit@gmail.com</VendorEmail>
+    </AddIn>
+</RevitAddIns>
