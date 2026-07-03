@@ -1,6 +1,6 @@
 {
   "version": 2,
-  "dgSpecHash": "QAugws3fhWM=",
+  "dgSpecHash": "gvF1UlA/Yo8=",
   "success": true,
   "projectFilePath": "E:\\SynologyDrive\\1.XO Studio\\01.effe\\04- Production\\New Feature\\effetopo\\effetopo.csproj",
   "expectedPackageFiles": [
@@ -14,7 +14,10 @@
     "C:\\Users\\quynh\\.nuget\\packages\\nice3point.revit.toolkit\\2025.0.0\\nice3point.revit.toolkit.2025.0.0.nupkg.sha512",
     "C:\\Users\\quynh\\.nuget\\packages\\system.codedom\\8.0.0\\system.codedom.8.0.0.nupkg.sha512",
     "C:\\Users\\quynh\\.nuget\\packages\\system.management\\8.0.0\\system.management.8.0.0.nupkg.sha512",
-    "C:\\Users\\quynh\\.nuget\\packages\\system.security.cryptography.protecteddata\\6.0.0\\system.security.cryptography.protecteddata.6.0.0.nupkg.sha512"
+    "C:\\Users\\quynh\\.nuget\\packages\\system.security.cryptography.protecteddata\\6.0.0\\system.security.cryptography.protecteddata.6.0.0.nupkg.sha512",
+    "C:\\Users\\quynh\\.nuget\\packages\\microsoft.netcore.app.ref\\8.0.26\\microsoft.netcore.app.ref.8.0.26.nupkg.sha512",
+    "C:\\Users\\quynh\\.nuget\\packages\\microsoft.windowsdesktop.app.ref\\8.0.26\\microsoft.windowsdesktop.app.ref.8.0.26.nupkg.sha512",
+    "C:\\Users\\quynh\\.nuget\\packages\\microsoft.aspnetcore.app.ref\\8.0.26\\microsoft.aspnetcore.app.ref.8.0.26.nupkg.sha512"
   ],
   "logs": [
     {

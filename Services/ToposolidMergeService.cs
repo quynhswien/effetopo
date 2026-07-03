@@ -45,7 +45,10 @@ namespace effetopo.Services
         {
             public XYZ OriginalPoint { get; set; }
             public double NewZ { get; set; }
+            /// <summary>True when XY is not an existing SlabShape vertex (AddPoint path).</summary>
             public bool IsNewPoint { get; set; }
+            /// <summary>True when point came from SlabShapeVertices (ModifySubElement path).</summary>
+            public bool IsSlabShapeVertex { get; set; }
         }
 
         /// <summary>
@@ -1709,8 +1712,22 @@ namespace effetopo.Services
             const double boundaryTolerance = 0.1; // 10cm tolerance for boundary check
             const double xyTolerance = 0.01; // 1cm tolerance for XY comparison
 
-            // Prefer SlabShapeEditor vertices (every vertex Revit has, including boundary); fallback to geometry+boundary if empty
-            var floorPointsToUpdate = ExtractSlabShapeVerticesFromFloor(floor);
+            SlabShapeEditor editor = floor.GetSlabShapeEditor();
+            if (editor == null)
+                throw new InvalidOperationException("Could not get SlabShapeEditor from Floor");
+            editor.Enable();
+
+            // SlabShape vertices (after Enable) + sketch corners – only real slab vertices use ModifySubElement
+            var slabVertexPoints = ExtractSlabShapeVerticesFromFloor(floor, editor);
+            var existingSlabVertexXY = new HashSet<string>();
+            foreach (var p in slabVertexPoints)
+            {
+                try { existingSlabVertexXY.Add(GetXYKey(p, xyTolerance)); } catch { }
+            }
+
+            var floorPointsToUpdate = new List<XYZ>(slabVertexPoints);
+            var floorPointXYKeys = new HashSet<string>(existingSlabVertexXY);
+
             if (floorPointsToUpdate.Count == 0)
             {
                 Log.Warning("No SlabShape vertices on this Floor – using geometry + boundary points as fallback");
@@ -1734,20 +1751,28 @@ namespace effetopo.Services
                     catch { }
                 }
                 const double topSurfaceTolerance = 0.02;
-                floorPointsToUpdate = new List<XYZ>();
                 foreach (var p in floorPoints)
                 {
                     if (p == null) continue;
                     try
                     {
                         string key = GetXYKey(p, xyTolerance);
-                        if (floorTopZByXY.TryGetValue(key, out double maxZ) && p.Z >= maxZ - topSurfaceTolerance)
+                        if (floorTopZByXY.TryGetValue(key, out double maxZ) && p.Z >= maxZ - topSurfaceTolerance
+                            && floorPointXYKeys.Add(key))
                             floorPointsToUpdate.Add(p);
                     }
                     catch { }
                 }
                 Log.Information("Fallback: using {Count} top-surface points from geometry", floorPointsToUpdate.Count);
             }
+            else
+            {
+                Log.Information("Using {SlabCount} SlabShape vertices ({Total} total for Step 1 projection)",
+                    slabVertexPoints.Count, floorPointsToUpdate.Count);
+            }
+
+            var sketchCorners = ExtractSketchBoundaryCornerPoints(floor);
+            var sketchCornerUpdates = new List<(XYZ Corner, double TopoZ)>();
 
             // Extract points from Toposolid
             var topoPoints = ExtractPointsFromToposolid(toposolid);
@@ -1770,6 +1795,22 @@ namespace effetopo.Services
             var spatialGrid = new SpatialGrid(topoTriangles, cellSize: 10.0);
             Log.Information("Spatial index built successfully");
 
+            foreach (var corner in sketchCorners)
+            {
+                if (corner == null) continue;
+                try
+                {
+                    double? topoZ = GetElevationAtPointOptimized(corner, spatialGrid);
+                    if (!topoZ.HasValue) continue;
+                    sketchCornerUpdates.Add((corner, topoZ.Value));
+                    string key = GetXYKey(corner, xyTolerance);
+                    floorPointXYKeys.Add(key);
+                }
+                catch { }
+            }
+            if (sketchCornerUpdates.Count > 0)
+                Log.Information("Prepared {Count} sketch corner elevations for corner pass", sketchCornerUpdates.Count);
+
             // STEP 1: PROJECT every SlabShape vertex onto toposolid – update all (including boundary) to topo Z
             Log.Information("Step 1: Projecting {FloorPointCount} SlabShape vertices onto toposolid (no filter – all vertices)...", floorPointsToUpdate.Count);
             int floorPointsProjected = 0;
@@ -1786,12 +1827,14 @@ namespace effetopo.Services
                     
                     if (topoZ.HasValue)
                     {
-                        // Update ALL top points to topo Z (no threshold – full alignment)
+                        string xyKey = GetXYKey(floorPoint, xyTolerance);
+                        bool isSlabVertex = existingSlabVertexXY.Contains(xyKey);
                         floorUpdates.Add(new PointUpdate 
                         { 
                             OriginalPoint = floorPoint, 
                             NewZ = topoZ.Value,
-                            IsNewPoint = false
+                            IsNewPoint = !isSlabVertex,
+                            IsSlabShapeVertex = isSlabVertex
                         });
                     }
                     else
@@ -1829,6 +1872,17 @@ namespace effetopo.Services
                     {
                         floorXYMap[key] = floorPoint;
                     }
+                }
+                catch { }
+            }
+            foreach (var (corner, _) in sketchCornerUpdates)
+            {
+                if (corner == null) continue;
+                try
+                {
+                    string key = GetXYKey(corner, xyTolerance);
+                    if (!floorXYMap.ContainsKey(key))
+                        floorXYMap[key] = corner;
                 }
                 catch { }
             }
@@ -1933,56 +1987,110 @@ namespace effetopo.Services
                 try
                 {
                     string key = GetXYKey(pu.OriginalPoint, applyXYTolerance);
-                    if (!pointsByXY.TryGetValue(key, out PointUpdate existing) || pu.NewZ > existing.NewZ)
+                    if (!pointsByXY.TryGetValue(key, out PointUpdate existing))
+                        pointsByXY[key] = pu;
+                    else if (pu.IsSlabShapeVertex && !existing.IsSlabShapeVertex)
+                        pointsByXY[key] = pu;
+                    else if (!pu.IsSlabShapeVertex && existing.IsSlabShapeVertex)
+                        { /* keep existing slab vertex entry */ }
+                    else if (pu.NewZ > existing.NewZ)
                         pointsByXY[key] = pu;
                 }
                 catch { }
             }
             var pointsToApply = pointsByXY.Values.ToList();
+            var sketchCornerKeys = new HashSet<string>();
+            foreach (var (corner, _) in sketchCornerUpdates)
+            {
+                try { sketchCornerKeys.Add(GetXYKey(corner, applyXYTolerance)); } catch { }
+            }
+            if (sketchCornerKeys.Count > 0)
+            {
+                int before = pointsToApply.Count;
+                pointsToApply = pointsToApply
+                    .Where(pu =>
+                    {
+                        if (pu?.OriginalPoint == null) return true;
+                        try { return !sketchCornerKeys.Contains(GetXYKey(pu.OriginalPoint, applyXYTolerance)); }
+                        catch { return true; }
+                    })
+                    .ToList();
+                Log.Information("Excluded {Count} sketch corner XY from bulk AddPoint (handled in corner pass)", before - pointsToApply.Count);
+            }
             Log.Information("Deduplicated by XY (~1.5cm): {Before} -> {After} points to apply (one per XY, Z = topo; bỏ bớt trùng thay vì giữ mà không chỉnh cao độ)",
                 pointsToAddOrUpdate.Count, pointsToApply.Count);
 
-            // Modify Floor using SlabShapeEditor – apply (x, y, topoZ) cho từng XY
-            SlabShapeEditor editor = floor.GetSlabShapeEditor();
+            // Modify Floor using SlabShapeEditor – add new points first, then ModifySubElement for existing vertices, then corner pass
             if (editor != null)
             {
-                editor.Enable();
-
                 int pointsApplied = 0;
+                int pointsModified = 0;
                 int pointsSkipped = 0;
                 var appliedPointsWithZ = new List<(double X, double Y, double Z)>();
                 var pointsSkippedByRevit = new List<PointUpdate>();
 
-                foreach (var pointUpdate in pointsToApply)
+                const double matchXYTolerance = 0.05; // ~1.5 cm to match (x,y) to SlabShapeVertex
+                Level floorLevel = (floor.LevelId != null && floor.LevelId != ElementId.InvalidElementId)
+                    ? doc.GetElement(floor.LevelId) as Level
+                    : null;
+                double levelElevation = floorLevel?.Elevation ?? 0;
+
+                var newPoints = pointsToApply.Where(p => p.IsNewPoint).ToList();
+                var existingVertices = pointsToApply.Where(p => p.IsSlabShapeVertex).ToList();
+
+                foreach (var pointUpdate in newPoints.Concat(existingVertices))
                 {
+                    double x = pointUpdate.OriginalPoint.X;
+                    double y = pointUpdate.OriginalPoint.Y;
+                    double topoZ = pointUpdate.NewZ;
+
                     try
                     {
-                        XYZ point = new XYZ(pointUpdate.OriginalPoint.X, pointUpdate.OriginalPoint.Y, pointUpdate.NewZ);
-                        editor.AddPoint(point);
-                        pointsApplied++;
-                        appliedPointsWithZ.Add((pointUpdate.OriginalPoint.X, pointUpdate.OriginalPoint.Y, pointUpdate.NewZ));
+                        if (pointUpdate.IsSlabShapeVertex)
+                        {
+                            SlabShapeVertex vertex = FindSlabShapeVertexNearXY(editor, x, y, matchXYTolerance);
+                            if (vertex == null)
+                            {
+                                Log.Debug("SlabShape vertex not found near ({X}, {Y}) – trying AddPoint", x, y);
+                                editor.AddPoint(new XYZ(x, y, topoZ));
+                            }
+                            else
+                            {
+                                double offset = topoZ - levelElevation;
+                                editor.ModifySubElement(vertex, offset);
+                                pointsModified++;
+                            }
+                            pointsApplied++;
+                            appliedPointsWithZ.Add((x, y, topoZ));
+                        }
+                        else
+                        {
+                            editor.AddPoint(new XYZ(x, y, topoZ));
+                            pointsApplied++;
+                            appliedPointsWithZ.Add((x, y, topoZ));
+                        }
                     }
                     catch (Exception ex)
                     {
-                        Log.Debug("Could not apply point at ({X}, {Y}) Z={Z}: {Error}", 
-                            pointUpdate.OriginalPoint.X, pointUpdate.OriginalPoint.Y, pointUpdate.NewZ, ex.Message);
+                        Log.Debug("Could not apply point at ({X}, {Y}) Z={Z} (IsNew={IsNew}, IsSlab={IsSlab}): {Error}",
+                            x, y, topoZ, pointUpdate.IsNewPoint, pointUpdate.IsSlabShapeVertex, ex.Message);
                         pointsSkipped++;
                         pointsSkippedByRevit.Add(pointUpdate);
                     }
                 }
 
-                // For points Revit could not accept: set Z to average of 2 nearest neighbors (by XY distance).
-                // First try AddPoint(x, y, avgZ). If Revit rejects (e.g. vertex already exists), use ModifySubElement on existing vertex.
+                // Corner pass: sketch junction points are implicit boundary vertices – not in SlabShapeVertices until modified via DrawPoint/ModifySubElement
+                int cornersModified = ApplySketchCornerElevations(doc, floor, editor, sketchCornerUpdates, levelElevation);
+                pointsModified += cornersModified;
+                pointsApplied += cornersModified;
+
+                // For new points Revit could not accept: set Z to average of 2 nearest neighbors (by XY distance).
                 int pointsAdjustedByAverage = 0;
-                const double matchXYTolerance = 0.05; // ~1.5 cm to match skipped (x,y) to SlabShapeVertex
-                Level floorLevel = (floor.LevelId != null && floor.LevelId != ElementId.InvalidElementId)
-                    ? doc.GetElement(floor.LevelId) as Level
-                    : null;
-                double levelElevation = floorLevel?.Elevation ?? 0;
                 var skippedPointAvgZ = new List<(double x, double y, double avgZ)>();
 
                 foreach (var skipped in pointsSkippedByRevit)
                 {
+                    if (skipped.IsSlabShapeVertex) continue;
                     if (appliedPointsWithZ.Count < 2) continue;
                     double x = skipped.OriginalPoint.X, y = skipped.OriginalPoint.Y;
                     var nearest = appliedPointsWithZ
@@ -2010,23 +2118,10 @@ namespace effetopo.Services
                 // For skipped points where AddPoint failed: find existing vertex at (x,y) and set elevation via ModifySubElement (offset from level).
                 if (skippedPointAvgZ.Count > 0 && editor.SlabShapeVertices != null)
                 {
-                    const double tolSq = matchXYTolerance * matchXYTolerance;
                     var vertexToOffsetSumCount = new Dictionary<SlabShapeVertex, (double sumZ, int count)>();
                     foreach (var (x, y, avgZ) in skippedPointAvgZ)
                     {
-                        SlabShapeVertex best = null;
-                        double bestDistSq = tolSq;
-                        foreach (SlabShapeVertex v in editor.SlabShapeVertices)
-                        {
-                            if (v?.Position == null) continue;
-                            double dx = v.Position.X - x, dy = v.Position.Y - y;
-                            double dSq = dx * dx + dy * dy;
-                            if (dSq < bestDistSq)
-                            {
-                                bestDistSq = dSq;
-                                best = v;
-                            }
-                        }
+                        SlabShapeVertex best = FindSlabShapeVertexNearXY(editor, x, y, matchXYTolerance);
                         if (best != null)
                         {
                             if (!vertexToOffsetSumCount.TryGetValue(best, out var t))
@@ -2056,8 +2151,8 @@ namespace effetopo.Services
                 LastFloorFollowPointsSkipped = pointsSkipped;
                 LastFloorFollowPointsAdjustedByAverage = pointsAdjustedByAverage;
 
-                Log.Information("Applied {Applied} points (one per XY, cao độ theo topo), skipped {Skipped} in Floor via SlabShapeEditor", 
-                    pointsApplied, pointsSkipped);
+                Log.Information("Applied {Applied} points ({Modified} existing vertices via ModifySubElement, {Added} new via AddPoint), skipped {Skipped} in Floor via SlabShapeEditor",
+                    pointsApplied, pointsModified, pointsApplied - pointsModified, pointsSkipped);
                 if (pointsAdjustedByAverage > 0)
                     Log.Information("Adjusted {Count} skipped points by averaging elevation of 2 nearest neighbors", pointsAdjustedByAverage);
             }
@@ -2069,6 +2164,50 @@ namespace effetopo.Services
             Log.Information("Successfully made Floor follow Toposolid surface");
             return floor;
 #endif
+        }
+
+        /// <summary>
+        /// Extracts sketch profile corner points (curve start/end) – exact boundary junctions including arc corners.
+        /// </summary>
+        private List<XYZ> ExtractSketchBoundaryCornerPoints(Floor floor)
+        {
+            var list = new List<XYZ>();
+            var seen = new HashSet<string>();
+            try
+            {
+                Sketch sketch = floor.Document.GetElement(floor.SketchId) as Sketch;
+                if (sketch?.Profile == null) return list;
+                for (int i = 0; i < sketch.Profile.Size; i++)
+                {
+                    CurveArray curves = sketch.Profile.get_Item(i);
+                    if (curves == null) continue;
+                    foreach (Curve curve in curves)
+                    {
+                        if (curve == null) continue;
+                        AddCorner(curve.GetEndPoint(0));
+                        AddCorner(curve.GetEndPoint(1));
+                    }
+                }
+                if (list.Count > 0)
+                    Log.Information("Extracted {Count} sketch boundary corner points", list.Count);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Could not extract sketch corner points: {Error}", ex.Message);
+            }
+            return list;
+
+            void AddCorner(XYZ pt)
+            {
+                if (pt == null) return;
+                try
+                {
+                    string key = GetXYKey(pt, 0.001);
+                    if (seen.Add(key))
+                        list.Add(pt);
+                }
+                catch { }
+            }
         }
 
         /// <summary>
@@ -2115,18 +2254,22 @@ namespace effetopo.Services
         /// Extracts ONLY SlabShapeEditor vertices from a Floor (every vertex Revit has for the slab, including all boundary).
         /// Use this to update elevation so no vertex is missed.
         /// </summary>
-        private List<XYZ> ExtractSlabShapeVerticesFromFloor(Floor floor)
+        private List<XYZ> ExtractSlabShapeVerticesFromFloor(Floor floor, SlabShapeEditor editor = null)
         {
             var list = new List<XYZ>();
             try
             {
-                SlabShapeEditor editor = floor.GetSlabShapeEditor();
-                if (editor != null && editor.SlabShapeVertices != null)
+                editor = editor ?? floor.GetSlabShapeEditor();
+                if (editor != null)
                 {
-                    foreach (SlabShapeVertex vertex in editor.SlabShapeVertices)
+                    try { editor.Enable(); } catch { }
+                    if (editor.SlabShapeVertices != null)
                     {
-                        if (vertex?.Position != null)
-                            list.Add(vertex.Position);
+                        foreach (SlabShapeVertex vertex in editor.SlabShapeVertices)
+                        {
+                            if (vertex?.Position != null)
+                                list.Add(vertex.Position);
+                        }
                     }
                 }
                 Log.Information("Extracted {Count} SlabShape vertices from Floor {Id} (no filter – all vertices including boundary)", list.Count, GetElementIdValue(floor.Id));
@@ -2136,6 +2279,302 @@ namespace effetopo.Services
                 Log.Error(ex, "Error extracting SlabShape vertices from Floor {Id}", GetElementIdValue(floor.Id));
             }
             return list;
+        }
+
+        /// <summary>
+        /// Finds the SlabShape vertex nearest to (x, y) within tolerance.
+        /// </summary>
+        private static SlabShapeVertex FindSlabShapeVertexNearXY(SlabShapeEditor editor, double x, double y, double tolerance)
+        {
+            return FindSlabShapeVertexAtXY(CollectSlabShapeVertices(editor), x, y, tolerance, tolerance);
+        }
+
+        private static List<SlabShapeVertex> CollectSlabShapeVertices(SlabShapeEditor editor)
+        {
+            var list = new List<SlabShapeVertex>();
+            if (editor?.SlabShapeVertices == null) return list;
+            foreach (SlabShapeVertex v in editor.SlabShapeVertices)
+            {
+                if (v != null) list.Add(v);
+            }
+            return list;
+        }
+
+        /// <summary>
+        /// Finds a SlabShape vertex at (x,y) within exactTolerance, or the nearest within maxNearestDist.
+        /// </summary>
+        private static SlabShapeVertex FindSlabShapeVertexAtXY(
+            IList<SlabShapeVertex> vertices, double x, double y, double exactTolerance, double maxNearestDist = -1)
+        {
+            if (vertices == null || vertices.Count == 0) return null;
+
+            double exactTolSq = exactTolerance * exactTolerance;
+            foreach (SlabShapeVertex v in vertices)
+            {
+                if (v?.Position == null) continue;
+                double dx = v.Position.X - x, dy = v.Position.Y - y;
+                if (dx * dx + dy * dy <= exactTolSq)
+                    return v;
+            }
+
+            if (maxNearestDist <= 0) return null;
+
+            double maxDistSq = maxNearestDist * maxNearestDist;
+            SlabShapeVertex best = null;
+            double bestDistSq = maxDistSq;
+            foreach (SlabShapeVertex v in vertices)
+            {
+                if (v?.Position == null) continue;
+                double dx = v.Position.X - x, dy = v.Position.Y - y;
+                double dSq = dx * dx + dy * dy;
+                if (dSq < bestDistSq)
+                {
+                    bestDistSq = dSq;
+                    best = v;
+                }
+            }
+            return best;
+        }
+
+        private static double GetNearestSlabShapeVertexDistance(IList<SlabShapeVertex> vertices, double x, double y)
+        {
+            if (vertices == null || vertices.Count == 0) return double.NaN;
+            double bestDistSq = double.MaxValue;
+            foreach (SlabShapeVertex v in vertices)
+            {
+                if (v?.Position == null) continue;
+                double dx = v.Position.X - x, dy = v.Position.Y - y;
+                bestDistSq = Math.Min(bestDistSq, dx * dx + dy * dy);
+            }
+            return Math.Sqrt(bestDistSq);
+        }
+
+        private static bool TryModifySlabVertexElevation(
+            SlabShapeEditor editor, SlabShapeVertex vertex, double topoZ, double levelElevation)
+        {
+            if (editor == null || vertex == null) return false;
+            try
+            {
+                editor.ModifySubElement(vertex, topoZ - levelElevation);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("ModifySubElement failed: {Error}", ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// DrawPoint updates an existing slab boundary point; AddPoint fails at corners with "Could not add point".
+        /// </summary>
+        private static bool TryDrawPointOnSlab(SlabShapeEditor editor, double x, double y, double z)
+        {
+            if (editor == null) return false;
+            try
+            {
+                var drawPoint = editor.GetType().GetMethod("DrawPoint", new[] { typeof(XYZ) });
+                if (drawPoint == null) return false;
+                drawPoint.Invoke(editor, new object[] { new XYZ(x, y, z) });
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("DrawPoint failed at ({X}, {Y}): {Error}", x, y, ex.Message);
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Applies topo elevation to sketch corner junctions after bulk boundary points are added.
+        /// </summary>
+        private int ApplySketchCornerElevations(
+            Document doc, Floor floor, SlabShapeEditor editor,
+            IList<(XYZ Corner, double TopoZ)> cornerUpdates, double levelElevation)
+        {
+            if (cornerUpdates == null || cornerUpdates.Count == 0) return 0;
+
+            doc.Regenerate();
+            editor = floor.GetSlabShapeEditor() ?? editor;
+            if (editor == null) return 0;
+            try { editor.Enable(); } catch { }
+
+            var vertices = CollectSlabShapeVertices(editor);
+            Log.Information("Corner pass: {Count} SlabShape vertices available after regenerate", vertices.Count);
+
+            const double exactCornerTol = 0.02; // ~6 mm
+            const double nearCornerTol = 0.25;  // ~3 in
+            const double edgePinOffset = 0.05;  // ~0.6 in inward along edges
+            int modified = 0;
+            int failed = 0;
+
+            foreach (var (corner, topoZ) in cornerUpdates)
+            {
+                if (corner == null) continue;
+                double cx = corner.X, cy = corner.Y;
+                bool done = false;
+
+                SlabShapeVertex vertex = FindSlabShapeVertexAtXY(vertices, cx, cy, exactCornerTol);
+                if (vertex != null)
+                    done = TryModifySlabVertexElevation(editor, vertex, topoZ, levelElevation);
+
+                if (!done)
+                    done = TryDrawPointOnSlab(editor, cx, cy, topoZ);
+
+                if (!done)
+                {
+                    try
+                    {
+                        editor.AddPoint(new XYZ(cx, cy, topoZ));
+                        done = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Debug("Corner AddPoint failed at ({X}, {Y}): {Error}", cx, cy, ex.Message);
+                    }
+                }
+
+                if (!done)
+                {
+                    vertices = CollectSlabShapeVertices(editor);
+                    vertex = FindSlabShapeVertexAtXY(vertices, cx, cy, exactCornerTol, nearCornerTol);
+                    if (vertex != null)
+                        done = TryModifySlabVertexElevation(editor, vertex, topoZ, levelElevation);
+                }
+
+                if (!done)
+                    done = TryPinCornerViaEdgeOffsets(floor, editor, corner, topoZ, edgePinOffset);
+
+                if (!done)
+                {
+                    vertices = CollectSlabShapeVertices(editor);
+                    vertex = FindSlabShapeVertexAtXY(vertices, cx, cy, exactCornerTol, nearCornerTol);
+                    if (vertex != null)
+                        done = TryModifySlabVertexElevation(editor, vertex, topoZ, levelElevation);
+                }
+
+                if (done)
+                {
+                    modified++;
+                }
+                else
+                {
+                    failed++;
+                    double nearestFt = GetNearestSlabShapeVertexDistance(vertices, cx, cy);
+                    Log.Warning(
+                        "Corner pass failed at ({X}, {Y}) Z={Z:F3}; nearest SlabShape vertex {Nearest:F3} ft away ({Total} vertices)",
+                        cx, cy, topoZ, nearestFt, vertices.Count);
+                }
+            }
+
+            Log.Information("Corner pass: modified {Modified} sketch corners, failed {Failed}", modified, failed);
+            return modified;
+        }
+
+        /// <summary>
+        /// Adds points slightly inward on edges meeting at a corner, then retries corner ModifySubElement.
+        /// </summary>
+        private bool TryPinCornerViaEdgeOffsets(
+            Floor floor, SlabShapeEditor editor, XYZ corner, double topoZ, double offsetFeet)
+        {
+            if (editor == null || corner == null || offsetFeet <= 0) return false;
+
+            var dirs = GetCornerEdgeOutwardDirections(floor, corner);
+            if (dirs.Count == 0) return false;
+
+            bool anyAdded = false;
+            foreach (XYZ dir in dirs)
+            {
+                if (dir == null || dir.GetLength() < 1e-9) continue;
+                XYZ pt = corner + dir.Multiply(offsetFeet);
+                try
+                {
+                    editor.AddPoint(new XYZ(pt.X, pt.Y, topoZ));
+                    anyAdded = true;
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug("Corner edge pin AddPoint failed at ({X}, {Y}): {Error}", pt.X, pt.Y, ex.Message);
+                }
+            }
+            return anyAdded;
+        }
+
+        /// <summary>
+        /// Unit XY directions from a sketch corner along each connected boundary curve (away from corner).
+        /// </summary>
+        private List<XYZ> GetCornerEdgeOutwardDirections(Floor floor, XYZ corner, double xyTolerance = 0.02)
+        {
+            var dirs = new List<XYZ>();
+            if (floor == null || corner == null) return dirs;
+
+            double tolSq = xyTolerance * xyTolerance;
+            try
+            {
+                Sketch sketch = floor.Document.GetElement(floor.SketchId) as Sketch;
+                if (sketch?.Profile == null) return dirs;
+
+                for (int i = 0; i < sketch.Profile.Size; i++)
+                {
+                    CurveArray curves = sketch.Profile.get_Item(i);
+                    if (curves == null) continue;
+                    foreach (Curve curve in curves)
+                    {
+                        if (curve == null) continue;
+                        XYZ p0 = curve.GetEndPoint(0);
+                        XYZ p1 = curve.GetEndPoint(1);
+
+                        if (XYDistanceSq(p0, corner) <= tolSq)
+                            AddDirection(curve, 0, p0, p1);
+                        if (XYDistanceSq(p1, corner) <= tolSq)
+                            AddDirection(curve, 1, p1, p0);
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Could not get corner edge directions: {Error}", ex.Message);
+            }
+            return dirs;
+
+            void AddDirection(Curve curve, double param, XYZ atCorner, XYZ otherEnd)
+            {
+                XYZ dir = null;
+                try
+                {
+                    Transform d = curve.ComputeDerivatives(param, true);
+                    dir = new XYZ(d.BasisX.X, d.BasisX.Y, 0);
+                    if (dir.GetLength() < 1e-9)
+                        dir = null;
+                    else
+                    {
+                        dir = dir.Normalize();
+                        XYZ chord = new XYZ(otherEnd.X - atCorner.X, otherEnd.Y - atCorner.Y, 0);
+                        if (chord.GetLength() > 1e-9 && dir.DotProduct(chord.Normalize()) < 0)
+                            dir = dir.Negate();
+                    }
+                }
+                catch
+                {
+                    dir = new XYZ(otherEnd.X - atCorner.X, otherEnd.Y - atCorner.Y, 0);
+                    if (dir.GetLength() > 1e-9) dir = dir.Normalize();
+                    else dir = null;
+                }
+
+                if (dir == null) return;
+                foreach (XYZ existing in dirs)
+                {
+                    if (existing != null && existing.DotProduct(dir) > 0.999)
+                        return;
+                }
+                dirs.Add(dir);
+            }
+
+            static double XYDistanceSq(XYZ a, XYZ b)
+            {
+                double dx = a.X - b.X, dy = a.Y - b.Y;
+                return dx * dx + dy * dy;
+            }
         }
 
         /// <summary>
