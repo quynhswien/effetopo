@@ -76,6 +76,8 @@ namespace effetopo.Views
                     options.SpacingFeet = ResolveSpacingFeet();
                 }
 
+                options.AddToposolidPointsWithinBoundary = AddTopoInteriorPointsCheckBox.IsChecked == true;
+
                 SelectedOptions = options;
                 DialogResult = true;
                 Close();

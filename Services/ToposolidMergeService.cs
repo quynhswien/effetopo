@@ -1888,9 +1888,13 @@ namespace effetopo.Services
             Log.Information("Projection complete: {Projected} floor points with elevation updates, {NoIntersection} points with no intersection", 
                 floorPointsProjected, pointsNoIntersection);
 
-            // STEP 2: ADD toposolid points that are within floor boundary (deduplicate by XY: keep highest Z only)
-            Log.Information("Step 2: Finding toposolid points within floor boundary to add (top-only per XY)...");
-            
+            // STEP 2: ADD toposolid points within floor boundary (optional) + boundary curve samples
+            bool addInteriorTopoPoints = boundarySampling.AddToposolidPointsWithinBoundary;
+            if (addInteriorTopoPoints)
+                Log.Information("Step 2: Finding toposolid points within floor boundary to add (top-only per XY)...");
+            else
+                Log.Information("Step 2: Skipping interior Toposolid points (user option); boundary curve points only");
+
             // Create XY map of SlabShape vertices for quick lookup
             var floorXYMap = new Dictionary<string, XYZ>();
             foreach (var floorPoint in floorPointsToUpdate)
@@ -1918,44 +1922,41 @@ namespace effetopo.Services
                 catch { }
             }
             
-            // Toposolid points to add: at each XY keep only highest Z (top surface) so Revit won't reject duplicate XY
+            // Toposolid interior points (optional): at each XY keep only highest Z (top surface)
             var topoPointsToAddByXY = new Dictionary<string, PointUpdate>();
-            foreach (var topoPoint in topoPoints)
+            if (addInteriorTopoPoints)
             {
-                if (topoPoint == null) continue;
-                
-                try
+                foreach (var topoPoint in topoPoints)
                 {
-                    // Check if topo point is within floor boundary
-                    if (topoPoint.X >= floorMinX - boundaryTolerance &&
-                        topoPoint.X <= floorMaxX + boundaryTolerance &&
-                        topoPoint.Y >= floorMinY - boundaryTolerance &&
-                        topoPoint.Y <= floorMaxY + boundaryTolerance)
+                    if (topoPoint == null) continue;
+
+                    try
                     {
-                        string xyKey = GetXYKey(topoPoint, xyTolerance);
-                        
-                        // Skip if this XY already exists in floor (will be updated in Step 1 list)
-                        if (floorXYMap.ContainsKey(xyKey))
-                            continue;
-                        
-                        // At each XY keep only the point with highest Z for dedupe (actual Z will come from projection)
-                        var update = new PointUpdate 
-                        { 
-                            OriginalPoint = topoPoint, 
-                            NewZ = topoPoint.Z,
-                            IsNewPoint = true
-                        };
-                        if (!topoPointsToAddByXY.TryGetValue(xyKey, out PointUpdate existing) || topoPoint.Z > existing.NewZ)
+                        if (topoPoint.X >= floorMinX - boundaryTolerance &&
+                            topoPoint.X <= floorMaxX + boundaryTolerance &&
+                            topoPoint.Y >= floorMinY - boundaryTolerance &&
+                            topoPoint.Y <= floorMaxY + boundaryTolerance)
                         {
-                            topoPointsToAddByXY[xyKey] = update;
+                            string xyKey = GetXYKey(topoPoint, xyTolerance);
+
+                            if (floorXYMap.ContainsKey(xyKey))
+                                continue;
+
+                            var update = new PointUpdate
+                            {
+                                OriginalPoint = topoPoint,
+                                NewZ = topoPoint.Z,
+                                IsNewPoint = true
+                            };
+                            if (!topoPointsToAddByXY.TryGetValue(xyKey, out PointUpdate existing) || topoPoint.Z > existing.NewZ)
+                                topoPointsToAddByXY[xyKey] = update;
                         }
                     }
-                }
-                catch (Exception ex)
-                {
-                    Log.Warning(ex, "Error processing topo point ({X}, {Y}, {Z}), skipping", 
-                        topoPoint.X, topoPoint.Y, topoPoint.Z);
-                    continue;
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "Error processing topo point ({X}, {Y}, {Z}), skipping",
+                            topoPoint.X, topoPoint.Y, topoPoint.Z);
+                    }
                 }
             }
 
@@ -1995,8 +1996,12 @@ namespace effetopo.Services
             }
             
             int topoPointsToAdd = pointsToAddOrUpdate.Count(p => p.IsNewPoint);
-            Log.Information("Found {NewCount} toposolid points within floor boundary to add (projected onto topo surface for Z). Skipped {Skipped} (no surface intersection)",
-                topoPointsToAdd, topoPointsSkippedNoProjection);
+            if (addInteriorTopoPoints)
+                Log.Information("Found {NewCount} points to add (interior topo + boundary, projected onto topo surface). Skipped {Skipped} (no surface intersection)",
+                    topoPointsToAdd, topoPointsSkippedNoProjection);
+            else
+                Log.Information("Found {NewCount} boundary-only points to add (no interior topo). Skipped {Skipped} (no surface intersection)",
+                    topoPointsToAdd, topoPointsSkippedNoProjection);
             
             int pointsToAdd = pointsToAddOrUpdate.Count(p => p.IsNewPoint);
             int pointsToUpdate = pointsToAddOrUpdate.Count(p => !p.IsNewPoint);

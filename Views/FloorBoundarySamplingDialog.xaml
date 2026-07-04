@@ -5,9 +5,9 @@
     ResizeMode="CanResizeWithGrip"
     WindowStartupLocation="CenterScreen"
     Title="Boundary Point Division"
-    Height="580"
+    Height="640"
     Width="680"
-    MinHeight="520"
+    MinHeight="580"
     MinWidth="560">
     <Grid Margin="16">
         <Grid.RowDefinitions>
@@ -58,6 +58,15 @@
                             <TextBlock Margin="10,4,0,0" VerticalAlignment="Center" Text="segments"/>
                         </DockPanel>
                     </StackPanel>
+                </StackPanel>
+            </Border>
+
+            <Border Margin="0,16,0,0" Padding="12" BorderBrush="#CCC" BorderThickness="1" CornerRadius="4">
+                <StackPanel>
+                    <CheckBox x:Name="AddTopoInteriorPointsCheckBox" IsChecked="True" FontSize="14"
+                              Content="Add Toposolid points within Floor boundary"/>
+                    <TextBlock Margin="24,6,0,0" TextWrapping="Wrap" Foreground="#555" FontSize="13"
+                               Text="When checked, interior points from the Toposolid surface inside the Floor are added (blue points). When unchecked, only boundary curve points and corners are added."/>
                 </StackPanel>
             </Border>
         </StackPanel>

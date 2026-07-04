@@ -21,6 +21,9 @@ namespace effetopo.Models
         /// <summary>Number of equal segments per curve (sample points = segments + 1, including endpoints).</summary>
         public int SegmentsPerCurve { get; set; } = 2;
 
+        /// <summary>When true, add Toposolid points inside the Floor boundary. When false, only boundary curve + corner points.</summary>
+        public bool AddToposolidPointsWithinBoundary { get; set; } = true;
+
         public static FloorBoundarySamplingOptions Default => new FloorBoundarySamplingOptions();
     }
 }

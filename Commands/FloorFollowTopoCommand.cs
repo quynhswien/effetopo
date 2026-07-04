@@ -128,25 +128,11 @@ namespace effetopo.Commands
 
                 FloorBoundarySamplingOptions boundarySampling = samplingDialog.SelectedOptions;
                 string samplingSummary = boundarySampling.Mode == BoundarySampleMode.ByDistance
-                    ? $"Boundary points: by distance (~{(useMillimeters ? boundarySampling.SpacingFeet * 304.8 : boundarySampling.SpacingFeet):F2} {(useMillimeters ? "mm" : "ft")} spacing per curve)"
-                    : $"Boundary points: {boundarySampling.SegmentsPerCurve} segments per curve ({boundarySampling.SegmentsPerCurve + 1} points including endpoints)";
-
-                var result = System.Windows.MessageBox.Show(
-                    $"Make Floor (ID: {GetElementIdValue(floor.Id)}) follow " +
-                    $"Toposolid surface (ID: {GetElementIdValue(toposolid.Id)})?\n\n" +
-                    samplingSummary + "\n\n" +
-                    "Floor points within and on the boundary will be projected onto Toposolid surface.\n" +
-                    "All Toposolid points within Floor boundary will be added to Floor.",
-                    "Floor Follow Toposolid",
-                    System.Windows.MessageBoxButton.YesNo,
-                    System.Windows.MessageBoxImage.Question);
-
-                if (result == System.Windows.MessageBoxResult.No)
-                {
-                    return Result.Cancelled;
-                }
-
-                Log.Information("User selected boundary sampling: {Summary}", samplingSummary);
+                    ? $"by distance (~{(useMillimeters ? boundarySampling.SpacingFeet * 304.8 : boundarySampling.SpacingFeet):F2} {(useMillimeters ? "mm" : "ft")} per curve)"
+                    : $"{boundarySampling.SegmentsPerCurve} segments per curve";
+                Log.Information(
+                    "User selected boundary sampling: {Summary}, add interior topo points = {AddInterior}",
+                    samplingSummary, boundarySampling.AddToposolidPointsWithinBoundary);
 
                 // Perform operation
                 Log.Information("Checking document transaction state before operation");
