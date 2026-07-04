@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading.Tasks;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using effetopo.Models;
 
 namespace effetopo.Services
 {
@@ -1677,11 +1678,11 @@ namespace effetopo.Services
         /// </summary>
         public Floor FloorFollowToposolid(Document doc, Floor floor, 
 #if REVIT2024_OR_GREATER
-            Toposolid toposolid
+            Toposolid toposolid,
 #else
-            Element toposolid
+            Element toposolid,
 #endif
-            )
+            FloorBoundarySamplingOptions boundarySampling = null)
         {
 #if !REVIT2024_OR_GREATER
             throw new NotSupportedException("Toposolid is only available in Revit 2024 and later");
@@ -1689,6 +1690,21 @@ namespace effetopo.Services
             if (floor == null || toposolid == null)
             {
                 throw new ArgumentException("Both Floor and Toposolid are required");
+            }
+
+            boundarySampling ??= FloorBoundarySamplingOptions.Default;
+            if (boundarySampling.Mode == BoundarySampleMode.ByDistance)
+            {
+                if (boundarySampling.SpacingFeet <= 0)
+                    throw new ArgumentException("Boundary spacing must be greater than zero.");
+                Log.Information("Boundary sampling: by distance, spacing = {SpacingFeet:F4} ft", boundarySampling.SpacingFeet);
+            }
+            else
+            {
+                if (boundarySampling.SegmentsPerCurve < 1)
+                    throw new ArgumentException("Segments per curve must be at least 1.");
+                Log.Information("Boundary sampling: by segment count, {Segments} segments per curve",
+                    boundarySampling.SegmentsPerCurve);
             }
 
             Log.Information("Making Floor {FloorId} follow Toposolid {TopoId}",
@@ -1929,7 +1945,7 @@ namespace effetopo.Services
             }
 
             // STEP 2b: Sample entire boundary line and add points so toàn bộ đường boundary được chiếu theo topo
-            var boundarySampled = ExtractBoundarySampledPoints(floor, spacingFeet: 1.0);
+            var boundarySampled = ExtractBoundarySampledPoints(floor, boundarySampling);
             foreach (var pt in boundarySampled)
             {
                 if (pt == null) continue;
@@ -2212,12 +2228,12 @@ namespace effetopo.Services
 
         /// <summary>
         /// Samples points along the floor boundary (outline) so the entire boundary line gets projected onto topo.
-        /// spacingFeet: approximate distance between samples (e.g. 1.0 = 1 ft).
+        /// By distance: steps = ceil(length / spacing). By count: fixed segments per curve.
         /// </summary>
-        private List<XYZ> ExtractBoundarySampledPoints(Floor floor, double spacingFeet = 1.0)
+        private List<XYZ> ExtractBoundarySampledPoints(Floor floor, FloorBoundarySamplingOptions options)
         {
             var list = new List<XYZ>();
-            if (spacingFeet <= 0) return list;
+            if (options == null) return list;
             try
             {
                 Sketch sketch = floor.Document.GetElement(floor.SketchId) as Sketch;
@@ -2230,24 +2246,39 @@ namespace effetopo.Services
                         foreach (Curve curve in curves)
                         {
                             if (curve == null) continue;
-                            double len = curve.ApproximateLength;
-                            int steps = Math.Max(2, (int)Math.Ceiling(len / spacingFeet));
+                            int steps = GetBoundarySampleSteps(curve, options);
                             for (int k = 0; k <= steps; k++)
                             {
-                                double t = (steps > 0) ? (k / (double)steps) : 0;
+                                double t = steps > 0 ? k / (double)steps : 0;
                                 try { list.Add(curve.Evaluate(t, true)); } catch { }
                             }
                         }
                     }
                 }
                 if (list.Count > 0)
-                    Log.Information("Sampled {Count} points along floor boundary (spacing ~{Spacing} ft)", list.Count, spacingFeet);
+                {
+                    if (options.Mode == BoundarySampleMode.ByDistance)
+                        Log.Information("Sampled {Count} points along floor boundary (by distance, spacing ~{Spacing:F4} ft)",
+                            list.Count, options.SpacingFeet);
+                    else
+                        Log.Information("Sampled {Count} points along floor boundary (by count, {Segments} segments per curve)",
+                            list.Count, options.SegmentsPerCurve);
+                }
             }
             catch (Exception ex)
             {
                 Log.Debug("Could not sample floor boundary: {Error}", ex.Message);
             }
             return list;
+        }
+
+        private static int GetBoundarySampleSteps(Curve curve, FloorBoundarySamplingOptions options)
+        {
+            if (options.Mode == BoundarySampleMode.BySegmentCount)
+                return Math.Max(1, options.SegmentsPerCurve);
+
+            double len = curve.ApproximateLength;
+            return Math.Max(1, (int)Math.Ceiling(len / options.SpacingFeet));
         }
 
         /// <summary>

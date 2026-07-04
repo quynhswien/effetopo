@@ -5,7 +5,9 @@ using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
 using Autodesk.Revit.UI.Selection;
+using effetopo.Models;
 using effetopo.Services;
+using effetopo.Views;
 using JetBrains.Annotations;
 
 namespace effetopo.Commands
@@ -116,10 +118,23 @@ namespace effetopo.Commands
 
                 Log.Information("Selected Toposolid: {Id}", GetElementIdValue(toposolid.Id));
 
-                // Confirm operation
+                bool useMillimeters = IsProjectUsingMillimeters(doc);
+                var samplingDialog = new FloorBoundarySamplingDialog(useMillimeters);
+                if (samplingDialog.ShowDialog() != true || samplingDialog.SelectedOptions == null)
+                {
+                    Log.Information("User cancelled boundary sampling dialog");
+                    return Result.Cancelled;
+                }
+
+                FloorBoundarySamplingOptions boundarySampling = samplingDialog.SelectedOptions;
+                string samplingSummary = boundarySampling.Mode == BoundarySampleMode.ByDistance
+                    ? $"Boundary points: by distance (~{(useMillimeters ? boundarySampling.SpacingFeet * 304.8 : boundarySampling.SpacingFeet):F2} {(useMillimeters ? "mm" : "ft")} spacing per curve)"
+                    : $"Boundary points: {boundarySampling.SegmentsPerCurve} segments per curve ({boundarySampling.SegmentsPerCurve + 1} points including endpoints)";
+
                 var result = System.Windows.MessageBox.Show(
                     $"Make Floor (ID: {GetElementIdValue(floor.Id)}) follow " +
                     $"Toposolid surface (ID: {GetElementIdValue(toposolid.Id)})?\n\n" +
+                    samplingSummary + "\n\n" +
                     "Floor points within and on the boundary will be projected onto Toposolid surface.\n" +
                     "All Toposolid points within Floor boundary will be added to Floor.",
                     "Floor Follow Toposolid",
@@ -130,6 +145,8 @@ namespace effetopo.Commands
                 {
                     return Result.Cancelled;
                 }
+
+                Log.Information("User selected boundary sampling: {Summary}", samplingSummary);
 
                 // Perform operation
                 Log.Information("Checking document transaction state before operation");
@@ -147,9 +164,9 @@ namespace effetopo.Commands
                         ToposolidMergeService mergeService = ToposolidMergeService.Instance;
                         Log.Information("Calling FloorFollowToposolid service method");
 #if REVIT2024_OR_GREATER
-                        Floor updatedFloor = mergeService.FloorFollowToposolid(doc, floor, toposolid);
+                        Floor updatedFloor = mergeService.FloorFollowToposolid(doc, floor, toposolid, boundarySampling);
 #else
-                        Floor updatedFloor = mergeService.FloorFollowToposolid(doc, floor, toposolid);
+                        Floor updatedFloor = mergeService.FloorFollowToposolid(doc, floor, toposolid, boundarySampling);
 #endif
 
                         if (updatedFloor == null)
@@ -235,6 +252,26 @@ namespace effetopo.Commands
             }
 
             public bool AllowReference(Reference reference, XYZ position)
+            {
+                return false;
+            }
+        }
+
+        private static bool IsProjectUsingMillimeters(Document doc)
+        {
+            if (doc == null) return false;
+            try
+            {
+                Units units = doc.GetUnits();
+#if REVIT2024_OR_GREATER
+                FormatOptions lengthFormat = units?.GetFormatOptions(SpecTypeId.Length);
+                return lengthFormat != null && lengthFormat.GetUnitTypeId() == UnitTypeId.Millimeters;
+#else
+                FormatOptions lengthFormat = units?.GetFormatOptions(UnitType.UT_Length);
+                return lengthFormat != null && lengthFormat.DisplayUnits == DisplayUnitType.DUT_MILLIMETERS;
+#endif
+            }
+            catch
             {
                 return false;
             }
