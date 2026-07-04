@@ -1731,6 +1731,21 @@ namespace effetopo.Services
             SlabShapeEditor editor = floor.GetSlabShapeEditor();
             if (editor == null)
                 throw new InvalidOperationException("Could not get SlabShapeEditor from Floor");
+
+            Level floorLevel = (floor.LevelId != null && floor.LevelId != ElementId.InvalidElementId)
+                ? doc.GetElement(floor.LevelId) as Level
+                : null;
+            double levelElevation = floorLevel?.Elevation ?? 0;
+
+            // Slab shape offset is relative to Level + Height Offset From Level – keep instance offset unchanged, compensate in calculation.
+            double heightOffsetFromLevel = GetFloorHeightOffsetFromLevel(floor);
+            if (Math.Abs(heightOffsetFromLevel) > 1e-9)
+            {
+                Log.Information(
+                    "Floor Height Offset From Level = {0:F4} ft (unchanged); slab shape offsets computed relative to level + offset",
+                    heightOffsetFromLevel);
+            }
+
             editor.Enable();
 
             // SlabShape vertices (after Enable) + sketch corners – only real slab vertices use ModifySubElement
@@ -2046,10 +2061,6 @@ namespace effetopo.Services
                 var pointsSkippedByRevit = new List<PointUpdate>();
 
                 const double matchXYTolerance = 0.05; // ~1.5 cm to match (x,y) to SlabShapeVertex
-                Level floorLevel = (floor.LevelId != null && floor.LevelId != ElementId.InvalidElementId)
-                    ? doc.GetElement(floor.LevelId) as Level
-                    : null;
-                double levelElevation = floorLevel?.Elevation ?? 0;
 
                 var newPoints = pointsToApply.Where(p => p.IsNewPoint).ToList();
                 var existingVertices = pointsToApply.Where(p => p.IsSlabShapeVertex).ToList();
@@ -2060,43 +2071,24 @@ namespace effetopo.Services
                     double y = pointUpdate.OriginalPoint.Y;
                     double topoZ = pointUpdate.NewZ;
 
-                    try
+                    if (ApplyTopoElevationAtXY(editor, x, y, topoZ, levelElevation, heightOffsetFromLevel, matchXYTolerance))
                     {
-                        if (pointUpdate.IsSlabShapeVertex)
-                        {
-                            SlabShapeVertex vertex = FindSlabShapeVertexNearXY(editor, x, y, matchXYTolerance);
-                            if (vertex == null)
-                            {
-                                Log.Debug("SlabShape vertex not found near ({X}, {Y}) – trying AddPoint", x, y);
-                                editor.AddPoint(new XYZ(x, y, topoZ));
-                            }
-                            else
-                            {
-                                double offset = topoZ - levelElevation;
-                                editor.ModifySubElement(vertex, offset);
-                                pointsModified++;
-                            }
-                            pointsApplied++;
-                            appliedPointsWithZ.Add((x, y, topoZ));
-                        }
-                        else
-                        {
-                            editor.AddPoint(new XYZ(x, y, topoZ));
-                            pointsApplied++;
-                            appliedPointsWithZ.Add((x, y, topoZ));
-                        }
+                        pointsApplied++;
+                        pointsModified++;
+                        appliedPointsWithZ.Add((x, y, topoZ));
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        Log.Debug("Could not apply point at ({X}, {Y}) Z={Z} (IsNew={IsNew}, IsSlab={IsSlab}): {Error}",
-                            x, y, topoZ, pointUpdate.IsNewPoint, pointUpdate.IsSlabShapeVertex, ex.Message);
+                        Log.Debug("Could not apply point at ({X}, {Y}) Z={Z} (IsNew={IsNew}, IsSlab={IsSlab})",
+                            x, y, topoZ, pointUpdate.IsNewPoint, pointUpdate.IsSlabShapeVertex);
                         pointsSkipped++;
                         pointsSkippedByRevit.Add(pointUpdate);
                     }
                 }
 
                 // Corner pass: sketch junction points are implicit boundary vertices – not in SlabShapeVertices until modified via DrawPoint/ModifySubElement
-                int cornersModified = ApplySketchCornerElevations(doc, floor, editor, sketchCornerUpdates, levelElevation);
+                int cornersModified = ApplySketchCornerElevations(
+                    doc, floor, editor, sketchCornerUpdates, levelElevation, heightOffsetFromLevel);
                 pointsModified += cornersModified;
                 pointsApplied += cornersModified;
 
@@ -2116,19 +2108,14 @@ namespace effetopo.Services
                         .ToList();
                     if (nearest.Count < 2) continue;
                     double avgZ = (nearest[0].p.Z + nearest[1].p.Z) * 0.5;
-                    bool done = false;
-                    try
+                    if (ApplyTopoElevationAtXY(editor, x, y, avgZ, levelElevation, heightOffsetFromLevel, matchXYTolerance))
                     {
-                        editor.AddPoint(new XYZ(x, y, avgZ));
                         pointsAdjustedByAverage++;
-                        done = true;
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        Log.Debug("Could not apply averaged point at ({X}, {Y}) Z={Z}: {Error}", x, y, avgZ, ex.Message);
-                    }
-                    if (!done)
                         skippedPointAvgZ.Add((x, y, avgZ));
+                    }
                 }
 
                 // For skipped points where AddPoint failed: find existing vertex at (x,y) and set elevation via ModifySubElement (offset from level).
@@ -2151,8 +2138,8 @@ namespace effetopo.Services
                         try
                         {
                             double meanZ = kv.Value.sumZ / kv.Value.count;
-                            double offset = meanZ - levelElevation;
-                            editor.ModifySubElement(kv.Key, offset);
+                            double slabOffset = TopoZToSlabShapeOffset(meanZ, levelElevation, heightOffsetFromLevel);
+                            editor.ModifySubElement(kv.Key, slabOffset);
                             pointsAdjustedByAverage++;
                         }
                         catch (Exception ex)
@@ -2380,13 +2367,70 @@ namespace effetopo.Services
             return Math.Sqrt(bestDistSq);
         }
 
+        private static double GetFloorHeightOffsetFromLevel(Floor floor)
+        {
+            if (floor == null) return 0;
+            try
+            {
+                Parameter p = floor.get_Parameter(BuiltInParameter.FLOOR_HEIGHTABOVELEVEL_PARAM);
+                return p?.AsDouble() ?? 0;
+            }
+            catch
+            {
+                return 0;
+            }
+        }
+
+        /// <summary>
+        /// Converts absolute topo elevation to SlabShapeEditor offset (relative to Level + Height Offset From Level).
+        /// </summary>
+        private static double TopoZToSlabShapeOffset(double topoZ, double levelElevation, double heightOffsetFromLevel)
+        {
+            return topoZ - levelElevation - heightOffsetFromLevel;
+        }
+
+        /// <summary>
+        /// Adds or updates a slab point at (x,y) to topo elevation, always applying ModifySubElement with height-offset compensation.
+        /// AddPoint alone does not compensate Height Offset From Level; ModifySubElement does (same as corner pass).
+        /// </summary>
+        private static bool ApplyTopoElevationAtXY(
+            SlabShapeEditor editor, double x, double y, double topoZ,
+            double levelElevation, double heightOffsetFromLevel, double matchTolerance = 0.05)
+        {
+            if (editor == null) return false;
+
+            SlabShapeVertex vertex = FindSlabShapeVertexNearXY(editor, x, y, matchTolerance);
+            if (vertex != null)
+                return TryModifySlabVertexElevation(editor, vertex, topoZ, levelElevation, heightOffsetFromLevel);
+
+            try
+            {
+                editor.AddPoint(new XYZ(x, y, topoZ));
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("AddPoint failed at ({X}, {Y}) Z={Z}: {Error}", x, y, topoZ, ex.Message);
+                return false;
+            }
+
+            vertex = FindSlabShapeVertexNearXY(editor, x, y, matchTolerance);
+            if (vertex == null)
+            {
+                Log.Debug("AddPoint succeeded but no vertex found near ({X}, {Y})", x, y);
+                return false;
+            }
+
+            return TryModifySlabVertexElevation(editor, vertex, topoZ, levelElevation, heightOffsetFromLevel);
+        }
+
         private static bool TryModifySlabVertexElevation(
-            SlabShapeEditor editor, SlabShapeVertex vertex, double topoZ, double levelElevation)
+            SlabShapeEditor editor, SlabShapeVertex vertex, double topoZ,
+            double levelElevation, double heightOffsetFromLevel)
         {
             if (editor == null || vertex == null) return false;
             try
             {
-                editor.ModifySubElement(vertex, topoZ - levelElevation);
+                editor.ModifySubElement(vertex, TopoZToSlabShapeOffset(topoZ, levelElevation, heightOffsetFromLevel));
                 return true;
             }
             catch (Exception ex)
@@ -2421,7 +2465,8 @@ namespace effetopo.Services
         /// </summary>
         private int ApplySketchCornerElevations(
             Document doc, Floor floor, SlabShapeEditor editor,
-            IList<(XYZ Corner, double TopoZ)> cornerUpdates, double levelElevation)
+            IList<(XYZ Corner, double TopoZ)> cornerUpdates,
+            double levelElevation, double heightOffsetFromLevel)
         {
             if (cornerUpdates == null || cornerUpdates.Count == 0) return 0;
 
@@ -2447,22 +2492,23 @@ namespace effetopo.Services
 
                 SlabShapeVertex vertex = FindSlabShapeVertexAtXY(vertices, cx, cy, exactCornerTol);
                 if (vertex != null)
-                    done = TryModifySlabVertexElevation(editor, vertex, topoZ, levelElevation);
-
-                if (!done)
-                    done = TryDrawPointOnSlab(editor, cx, cy, topoZ);
+                    done = TryModifySlabVertexElevation(editor, vertex, topoZ, levelElevation, heightOffsetFromLevel);
 
                 if (!done)
                 {
-                    try
+                    if (TryDrawPointOnSlab(editor, cx, cy, topoZ))
                     {
-                        editor.AddPoint(new XYZ(cx, cy, topoZ));
+                        vertices = CollectSlabShapeVertices(editor);
+                        vertex = FindSlabShapeVertexAtXY(vertices, cx, cy, exactCornerTol, nearCornerTol);
+                        if (vertex != null)
+                            done = TryModifySlabVertexElevation(editor, vertex, topoZ, levelElevation, heightOffsetFromLevel);
+                    }
+                }
+
+                if (!done)
+                {
+                    if (ApplyTopoElevationAtXY(editor, cx, cy, topoZ, levelElevation, heightOffsetFromLevel, exactCornerTol))
                         done = true;
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Debug("Corner AddPoint failed at ({X}, {Y}): {Error}", cx, cy, ex.Message);
-                    }
                 }
 
                 if (!done)
@@ -2470,18 +2516,18 @@ namespace effetopo.Services
                     vertices = CollectSlabShapeVertices(editor);
                     vertex = FindSlabShapeVertexAtXY(vertices, cx, cy, exactCornerTol, nearCornerTol);
                     if (vertex != null)
-                        done = TryModifySlabVertexElevation(editor, vertex, topoZ, levelElevation);
+                        done = TryModifySlabVertexElevation(editor, vertex, topoZ, levelElevation, heightOffsetFromLevel);
                 }
 
                 if (!done)
-                    done = TryPinCornerViaEdgeOffsets(floor, editor, corner, topoZ, edgePinOffset);
+                    done = TryPinCornerViaEdgeOffsets(floor, editor, corner, topoZ, edgePinOffset, levelElevation, heightOffsetFromLevel);
 
                 if (!done)
                 {
                     vertices = CollectSlabShapeVertices(editor);
                     vertex = FindSlabShapeVertexAtXY(vertices, cx, cy, exactCornerTol, nearCornerTol);
                     if (vertex != null)
-                        done = TryModifySlabVertexElevation(editor, vertex, topoZ, levelElevation);
+                        done = TryModifySlabVertexElevation(editor, vertex, topoZ, levelElevation, heightOffsetFromLevel);
                 }
 
                 if (done)
@@ -2506,7 +2552,8 @@ namespace effetopo.Services
         /// Adds points slightly inward on edges meeting at a corner, then retries corner ModifySubElement.
         /// </summary>
         private bool TryPinCornerViaEdgeOffsets(
-            Floor floor, SlabShapeEditor editor, XYZ corner, double topoZ, double offsetFeet)
+            Floor floor, SlabShapeEditor editor, XYZ corner, double topoZ, double offsetFeet,
+            double levelElevation, double heightOffsetFromLevel)
         {
             if (editor == null || corner == null || offsetFeet <= 0) return false;
 
@@ -2518,15 +2565,8 @@ namespace effetopo.Services
             {
                 if (dir == null || dir.GetLength() < 1e-9) continue;
                 XYZ pt = corner + dir.Multiply(offsetFeet);
-                try
-                {
-                    editor.AddPoint(new XYZ(pt.X, pt.Y, topoZ));
+                if (ApplyTopoElevationAtXY(editor, pt.X, pt.Y, topoZ, levelElevation, heightOffsetFromLevel))
                     anyAdded = true;
-                }
-                catch (Exception ex)
-                {
-                    Log.Debug("Corner edge pin AddPoint failed at ({X}, {Y}): {Error}", pt.X, pt.Y, ex.Message);
-                }
             }
             return anyAdded;
         }
