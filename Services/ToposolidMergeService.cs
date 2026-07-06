@@ -1746,10 +1746,9 @@ namespace effetopo.Services
                     heightOffsetFromLevel);
             }
 
-            editor.Enable();
-            ResetFloorSlabShape(editor, floor);
+            editor = ResetAndPrepareFloorSlabShape(doc, floor, out bool slabShapeWasReset) ?? editor;
 
-            // SlabShape vertices (after Enable) + sketch corners – only real slab vertices use ModifySubElement
+            // SlabShape vertices (after reset + Enable + Regenerate) – only real slab vertices use ModifySubElement
             var slabVertexPoints = ExtractSlabShapeVerticesFromFloor(floor, editor);
             var existingSlabVertexXY = new HashSet<string>();
             foreach (var p in slabVertexPoints)
@@ -1762,40 +1761,48 @@ namespace effetopo.Services
 
             if (floorPointsToUpdate.Count == 0)
             {
-                Log.Warning("No SlabShape vertices on this Floor – using geometry + boundary points as fallback");
-                var floorPoints = ExtractPointsFromFloor(floor);
-                if (floorPoints == null || floorPoints.Count == 0)
+                if (slabShapeWasReset)
                 {
-                    Log.Warning("No points found on Floor – cannot update elevation");
-                    throw new InvalidOperationException("Floor has no SlabShape vertices and no geometry points to update.");
+                    Log.Information(
+                        "Flat floor after slab shape reset – no existing SlabShape vertices; shape will be built from boundary sampling and corner pass only");
                 }
-                // Top surface only: at each XY keep points with Z >= maxZ - 2cm
-                var floorTopZByXY = new Dictionary<string, double>();
-                foreach (var p in floorPoints)
+                else
                 {
-                    if (p == null) continue;
-                    try
+                    Log.Warning("No SlabShape vertices and reset failed – using geometry + boundary points as fallback");
+                    var floorPoints = ExtractPointsFromFloor(floor);
+                    if (floorPoints == null || floorPoints.Count == 0)
                     {
-                        string key = GetXYKey(p, xyTolerance);
-                        if (!floorTopZByXY.TryGetValue(key, out double maxZ)) maxZ = double.MinValue;
-                        if (p.Z > maxZ) floorTopZByXY[key] = p.Z;
+                        Log.Warning("No points found on Floor – cannot update elevation");
+                        throw new InvalidOperationException("Floor has no SlabShape vertices and no geometry points to update.");
                     }
-                    catch { }
-                }
-                const double topSurfaceTolerance = 0.02;
-                foreach (var p in floorPoints)
-                {
-                    if (p == null) continue;
-                    try
+                    // Top surface only: at each XY keep points with Z >= maxZ - 2cm
+                    var floorTopZByXY = new Dictionary<string, double>();
+                    foreach (var p in floorPoints)
                     {
-                        string key = GetXYKey(p, xyTolerance);
-                        if (floorTopZByXY.TryGetValue(key, out double maxZ) && p.Z >= maxZ - topSurfaceTolerance
-                            && floorPointXYKeys.Add(key))
-                            floorPointsToUpdate.Add(p);
+                        if (p == null) continue;
+                        try
+                        {
+                            string key = GetXYKey(p, xyTolerance);
+                            if (!floorTopZByXY.TryGetValue(key, out double maxZ)) maxZ = double.MinValue;
+                            if (p.Z > maxZ) floorTopZByXY[key] = p.Z;
+                        }
+                        catch { }
                     }
-                    catch { }
+                    const double topSurfaceTolerance = 0.02;
+                    foreach (var p in floorPoints)
+                    {
+                        if (p == null) continue;
+                        try
+                        {
+                            string key = GetXYKey(p, xyTolerance);
+                            if (floorTopZByXY.TryGetValue(key, out double maxZ) && p.Z >= maxZ - topSurfaceTolerance
+                                && floorPointXYKeys.Add(key))
+                                floorPointsToUpdate.Add(p);
+                        }
+                        catch { }
+                    }
+                    Log.Information("Fallback: using {Count} top-surface points from geometry", floorPointsToUpdate.Count);
                 }
-                Log.Information("Fallback: using {Count} top-surface points from geometry", floorPointsToUpdate.Count);
             }
             else
             {
@@ -2058,8 +2065,11 @@ namespace effetopo.Services
                 pointsToAddOrUpdate.Count, pointsToApply.Count);
 
             // Modify Floor using SlabShapeEditor – add new points first, then ModifySubElement for existing vertices, then corner pass
+            editor = floor.GetSlabShapeEditor() ?? editor;
             if (editor != null)
             {
+                EnsureSlabShapeEditingEnabled(editor);
+
                 int pointsApplied = 0;
                 int pointsModified = 0;
                 int pointsSkipped = 0;
@@ -2388,19 +2398,57 @@ namespace effetopo.Services
         }
 
         /// <summary>
-        /// Clears prior slab shape edits so each Floor Follow Topo run starts from a flat default shape.
+        /// Clears prior slab shape edits, regenerates, and re-enables editing so the next run starts from a flat default shape.
+        /// ResetSlabShape disables editing; Regenerate + Enable are required before reading vertices or applying new points.
         /// </summary>
-        private void ResetFloorSlabShape(SlabShapeEditor editor, Floor floor)
+        private SlabShapeEditor ResetAndPrepareFloorSlabShape(Document doc, Floor floor, out bool resetSucceeded)
         {
-            if (editor == null || floor == null) return;
+            resetSucceeded = false;
+            if (doc == null || floor == null) return null;
+
+            SlabShapeEditor editor = floor.GetSlabShapeEditor();
+            if (editor == null) return null;
+
             try
             {
                 editor.ResetSlabShape();
-                Log.Information("Reset Floor {Id} slab shape to default before follow topo", GetElementIdValue(floor.Id));
+                doc.Regenerate();
+
+                editor = floor.GetSlabShapeEditor();
+                if (editor == null)
+                {
+                    Log.Warning("SlabShapeEditor unavailable after reset on Floor {Id}", GetElementIdValue(floor.Id));
+                    return null;
+                }
+
+                editor.Enable();
+                doc.Regenerate();
+
+                int vertexCount = editor.SlabShapeVertices?.Size ?? 0;
+                Log.Information(
+                    "Reset Floor {Id} slab shape to default before follow topo ({VertexCount} SlabShape vertices after regenerate)",
+                    GetElementIdValue(floor.Id), vertexCount);
+                resetSucceeded = true;
+                return editor;
             }
             catch (Exception ex)
             {
                 Log.Warning("Could not reset Floor {Id} slab shape: {Error}", GetElementIdValue(floor.Id), ex.Message);
+                return floor.GetSlabShapeEditor();
+            }
+        }
+
+        private static void EnsureSlabShapeEditingEnabled(SlabShapeEditor editor)
+        {
+            if (editor == null) return;
+            try
+            {
+                if (!editor.IsEnabled)
+                    editor.Enable();
+            }
+            catch
+            {
+                try { editor.Enable(); } catch { }
             }
         }
 
