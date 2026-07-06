@@ -40,6 +40,7 @@ namespace effetopo.Commands
                 // If requirement is none, execute without checking
                 if (licenseRequirement == "none")
                 {
+                    TrackCommandUsage();
                     return ExecuteCommand(commandData, ref message, elements);
                 }
 
@@ -66,7 +67,7 @@ namespace effetopo.Commands
                 Log.Information("License check passed for command {Command}", CommandName);
 
                 // Record command usage
-                StatisticsCollectorService.Instance.RecordFeatureUsage(CommandName);
+                TrackCommandUsage();
 
                 return ExecuteCommand(commandData, ref message, elements);
             }
@@ -84,6 +85,14 @@ namespace effetopo.Commands
         /// Abstract method to be implemented by derived commands
         /// </summary>
         protected abstract Result ExecuteCommand(ExternalCommandData commandData, ref string message, ElementSet elements);
+
+        private void TrackCommandUsage()
+        {
+            StatisticsCollectorService.Instance.RecordFeatureUsage(CommandName);
+
+            if (ToposolidToolsRibbonService.Instance.IsToposolidToolCommand(CommandName))
+                ToposolidToolsRibbonService.Instance.RecordCommandUsed(CommandName);
+        }
 
         /// <summary>
         /// Shows a warning message about the license status and handles license requirements

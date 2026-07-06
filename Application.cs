@@ -241,40 +241,7 @@ namespace effetopo
         /// </summary>
         private void AddCommandsToPanel(RibbonPanel panel)
         {
-            // Create a pulldown button for Toposolid commands
-            var pulldownData = new PulldownButtonData("ToposolidCommands", "Toposolid\nTools");
-            var pulldownButton = panel.AddItem(pulldownData) as PulldownButton;
-            
-            if (pulldownButton != null)
-            {
-                pulldownButton.SetImage("/effetopo;component/Resources/Icons/RibbonIcon16.png");
-                pulldownButton.SetLargeImage("/effetopo;component/Resources/Icons/RibbonIcon32.png");
-                pulldownButton.ToolTip = "Toposolid merge and join tools";
-
-                // Add Join Multiple Toposolids command
-                var joinButton = pulldownButton.AddPushButton<Commands.JoinMultipleToposolidsCommand>(
-                    Commands.JoinMultipleToposolidsCommand.COMMAND_NAME);
-                joinButton.SetImage("/effetopo;component/Resources/Icons/RibbonIcon16.png");
-                joinButton.SetLargeImage("/effetopo;component/Resources/Icons/RibbonIcon32.png");
-                joinButton.ToolTip = "Join Multiple Toposolids\nMerge 2+ Toposolids using max elevation priority";
-
-                // Add Merge Proposal command
-                var mergeButton = pulldownButton.AddPushButton<Commands.MergeProposalToposolidCommand>(
-                    Commands.MergeProposalToposolidCommand.COMMAND_NAME);
-                mergeButton.SetImage("/effetopo;component/Resources/Icons/RibbonIcon16.png");
-                mergeButton.SetLargeImage("/effetopo;component/Resources/Icons/RibbonIcon32.png");
-                mergeButton.ToolTip = "Merge Proposal Toposolid\nMerge Proposal into Existing Toposolid (Proposal priority)";
-
-                // Add separator
-                pulldownButton.AddSeparator();
-
-                // Add Floor Follow Topo command
-                var floorFollowButton = pulldownButton.AddPushButton<Commands.FloorFollowTopoCommand>(
-                    Commands.FloorFollowTopoCommand.COMMAND_NAME);
-                floorFollowButton.SetImage("/effetopo;component/Resources/Icons/RibbonIcon16.png");
-                floorFollowButton.SetLargeImage("/effetopo;component/Resources/Icons/RibbonIcon32.png");
-                floorFollowButton.ToolTip = "Floor Follow Toposolid\nMake Floor follow Toposolid surface elevation";
-            }
+            ToposolidToolsRibbonService.Instance.CreateSplitButton(panel);
         }
 
         #endregion
