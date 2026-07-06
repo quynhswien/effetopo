@@ -119,7 +119,8 @@ namespace effetopo.Commands
                 Log.Information("Selected Toposolid: {Id}", GetElementIdValue(toposolid.Id));
 
                 bool useMillimeters = IsProjectUsingMillimeters(doc);
-                var samplingDialog = new FloorBoundarySamplingDialog(useMillimeters);
+                var savedSettings = FloorBoundarySamplingSettingsService.Instance.Load();
+                var samplingDialog = new FloorBoundarySamplingDialog(useMillimeters, savedSettings);
                 if (samplingDialog.ShowDialog() != true || samplingDialog.SelectedOptions == null)
                 {
                     Log.Information("User cancelled boundary sampling dialog");

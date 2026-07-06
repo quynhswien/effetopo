@@ -1,7 +1,6 @@
 using System;
 using System.Globalization;
 using System.Windows;
-using System.Windows.Controls;
 using effetopo.Models;
 
 namespace effetopo.Views
@@ -12,7 +11,7 @@ namespace effetopo.Views
 
         public FloorBoundarySamplingOptions? SelectedOptions { get; private set; }
 
-        public FloorBoundarySamplingDialog(bool useMillimeters)
+        public FloorBoundarySamplingDialog(bool useMillimeters, FloorBoundarySamplingSettings? initialSettings = null)
         {
             InitializeComponent();
             _useMillimeters = useMillimeters;
@@ -51,6 +50,49 @@ namespace effetopo.Views
             CountPreset1.Checked += (_, __) => CountCustomTextBox.IsEnabled = false;
             CountPreset2.Checked += (_, __) => CountCustomTextBox.IsEnabled = false;
             CountPreset3.Checked += (_, __) => CountCustomTextBox.IsEnabled = false;
+
+            if (initialSettings != null)
+                ApplySettings(initialSettings);
+        }
+
+        private void ApplySettings(FloorBoundarySamplingSettings settings)
+        {
+            AddTopoInteriorPointsCheckBox.IsChecked = settings.AddToposolidPointsWithinBoundary;
+
+            if (settings.Mode == BoundarySampleMode.BySegmentCount)
+            {
+                CountModeOption.IsChecked = true;
+                SetModePanels(false);
+
+                if (settings.UseCustomSegmentCount)
+                {
+                    CountCustomOption.IsChecked = true;
+                    CountCustomTextBox.Text = settings.CustomSegmentCount.ToString(CultureInfo.InvariantCulture);
+                }
+                else if (settings.SegmentPresetIndex == 1)
+                    CountPreset2.IsChecked = true;
+                else if (settings.SegmentPresetIndex == 2)
+                    CountPreset3.IsChecked = true;
+                else
+                    CountPreset1.IsChecked = true;
+            }
+            else
+            {
+                DistanceModeOption.IsChecked = true;
+                SetModePanels(true);
+
+                if (settings.UseCustomSpacing)
+                {
+                    DistCustomOption.IsChecked = true;
+                    DistCustomTextBox.Text = settings.CustomSpacingDisplay.ToString(CultureInfo.InvariantCulture);
+                }
+                else if (settings.DistancePresetIndex == 1)
+                    DistPreset2.IsChecked = true;
+                else if (settings.DistancePresetIndex == 2)
+                    DistPreset3.IsChecked = true;
+                else
+                    DistPreset1.IsChecked = true;
+            }
         }
 
         private void SetModePanels(bool distanceMode)
@@ -63,22 +105,9 @@ namespace effetopo.Views
         {
             try
             {
-                var options = new FloorBoundarySamplingOptions();
-
-                if (CountModeOption.IsChecked == true)
-                {
-                    options.Mode = BoundarySampleMode.BySegmentCount;
-                    options.SegmentsPerCurve = ResolveSegmentCount();
-                }
-                else
-                {
-                    options.Mode = BoundarySampleMode.ByDistance;
-                    options.SpacingFeet = ResolveSpacingFeet();
-                }
-
-                options.AddToposolidPointsWithinBoundary = AddTopoInteriorPointsCheckBox.IsChecked == true;
-
-                SelectedOptions = options;
+                var settings = BuildSettingsFromUi();
+                SelectedOptions = settings.ToOptions();
+                Services.FloorBoundarySamplingSettingsService.Instance.Save(settings);
                 DialogResult = true;
                 Close();
             }
@@ -86,6 +115,44 @@ namespace effetopo.Views
             {
                 MessageBox.Show(this, ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
             }
+        }
+
+        private FloorBoundarySamplingSettings BuildSettingsFromUi()
+        {
+            var settings = new FloorBoundarySamplingSettings
+            {
+                AddToposolidPointsWithinBoundary = AddTopoInteriorPointsCheckBox.IsChecked == true
+            };
+
+            if (CountModeOption.IsChecked == true)
+            {
+                settings.Mode = BoundarySampleMode.BySegmentCount;
+                settings.UseCustomSegmentCount = CountCustomOption.IsChecked == true;
+                settings.SegmentPresetIndex = settings.UseCustomSegmentCount ? -1
+                    : CountPreset2.IsChecked == true ? 1
+                    : CountPreset3.IsChecked == true ? 2 : 0;
+                settings.SegmentsPerCurve = ResolveSegmentCount();
+                settings.CustomSegmentCount = settings.UseCustomSegmentCount
+                    ? settings.SegmentsPerCurve
+                    : 10;
+            }
+            else
+            {
+                settings.Mode = BoundarySampleMode.ByDistance;
+                settings.UseCustomSpacing = DistCustomOption.IsChecked == true;
+                settings.DistancePresetIndex = settings.UseCustomSpacing ? -1
+                    : DistPreset2.IsChecked == true ? 1
+                    : DistPreset3.IsChecked == true ? 2 : 0;
+                settings.SpacingFeet = ResolveSpacingFeet();
+                if (settings.UseCustomSpacing)
+                {
+                    string raw = (DistCustomTextBox.Text ?? string.Empty).Trim().Replace(",", ".");
+                    double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double display);
+                    settings.CustomSpacingDisplay = display;
+                }
+            }
+
+            return settings;
         }
 
         private double ResolveSpacingFeet()
