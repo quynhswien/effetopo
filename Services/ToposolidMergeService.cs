@@ -1747,6 +1747,7 @@ namespace effetopo.Services
             }
 
             editor.Enable();
+            ResetFloorSlabShape(editor, floor);
 
             // SlabShape vertices (after Enable) + sketch corners – only real slab vertices use ModifySubElement
             var slabVertexPoints = ExtractSlabShapeVerticesFromFloor(floor, editor);
@@ -2383,6 +2384,23 @@ namespace effetopo.Services
             catch
             {
                 return 0;
+            }
+        }
+
+        /// <summary>
+        /// Clears prior slab shape edits so each Floor Follow Topo run starts from a flat default shape.
+        /// </summary>
+        private void ResetFloorSlabShape(SlabShapeEditor editor, Floor floor)
+        {
+            if (editor == null || floor == null) return;
+            try
+            {
+                editor.ResetSlabShape();
+                Log.Information("Reset Floor {Id} slab shape to default before follow topo", GetElementIdValue(floor.Id));
+            }
+            catch (Exception ex)
+            {
+                Log.Warning("Could not reset Floor {Id} slab shape: {Error}", GetElementIdValue(floor.Id), ex.Message);
             }
         }
 
