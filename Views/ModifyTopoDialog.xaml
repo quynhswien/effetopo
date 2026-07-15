@@ -163,7 +163,7 @@
                                     <ComboBox x:Name="ShapeFalloffCombo" Grid.Row="3" Grid.Column="1" Height="28" Margin="0,4"/>
                                 </Grid>
                                 <TextBlock Margin="0,10,0,0" Foreground="#777" TextWrapping="Wrap"
-                                           Text="Click «Pick &amp; Apply Stamp», then click a point on the toposolid in the 3D view. Revit will prompt for the pick — do not click the surface directly while the dialog is open. Ok finishes."/>
+                                           Text="Bấm «Pick &amp; Preview Stamp» để thêm stamp vào draft (cam/orange trên topo). Có thể lặp nhiều lần. Bấm Ok để ghi thật vào Toposolid; Cancel bỏ hết draft."/>
                             </StackPanel>
 
                             <!-- Smooth Geometry -->
@@ -243,13 +243,13 @@
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
             <CheckBox x:Name="ShowPreviewCheck" Content="Show Preview" VerticalAlignment="Center" IsChecked="True"
-                      ToolTip="Inflate Surface: preview brush radius on hover. Shape by Point uses Pick &amp; Apply Stamp instead."/>
+                      ToolTip="Shape by Point: hiển thị draft stamp (cam) trên topo. Ok mới commit thật."/>
             <TextBlock x:Name="PreviewStatusText" Grid.Column="0" Margin="140,0,0,0"
                        VerticalAlignment="Center" Foreground="#666" FontSize="11"/>
             <StackPanel Grid.Column="1" Orientation="Horizontal">
-                <Button x:Name="PickApplyBtn" Content="Pick &amp; Apply Stamp" Width="150" Height="32" Margin="0,0,8,0"
+                <Button x:Name="PickApplyBtn" Content="Pick &amp; Preview Stamp" Width="160" Height="32" Margin="0,0,8,0"
                         Visibility="Collapsed" Click="PickApply_Click"
-                        ToolTip="Click a point on the toposolid to apply the shape stamp (Modify Sub Elements)"/>
+                        ToolTip="Chọn điểm để thêm stamp vào draft (preview). Ok để ghi vào Toposolid."/>
                 <Button x:Name="ApplyBtn" Content="Apply changes" Width="120" Height="32" Margin="0,0,8,0"
                         Click="Apply_Click"/>
                 <Button Content="Cancel" Width="90" Height="32" Margin="0,0,8,0" IsCancel="True" Click="Cancel_Click"/>

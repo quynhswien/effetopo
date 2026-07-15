@@ -69,6 +69,13 @@ namespace effetopo.Commands
                         }
                         options = dialog.SelectedOptions;
                         closeAfter = dialog.CloseAfterAction;
+
+                        if (options.Tool == ModifyTopoTool.ShapeByPoint)
+                        {
+                            ModifyTopoResult commitResult = preview.CommitDraftIfPending();
+                            if (commitResult != null)
+                                currentCount = commitResult.PointsAfterModification;
+                        }
                     }
 
                     savedSettings = settingsService.Load();
@@ -86,7 +93,7 @@ namespace effetopo.Commands
                         currentCount = topoService.CountSlabShapeVertices(toposolid);
                         if (closeAfter)
                         {
-                            string shapeDetail = $"Shape by Point applied.\n\n" +
+                            string shapeDetail = $"Shape by Point committed.\n\n" +
                                 $"Original points: {originalCount}\n" +
                                 $"Current points: {currentCount}";
                             RevitNotificationHandler.ShowGeneralMessageDialog("Modify Toposolid Complete", shapeDetail);
@@ -94,7 +101,7 @@ namespace effetopo.Commands
                         }
 
                         RevitNotificationHandler.ShowGeneralMessageDialog("Changes Applied",
-                            $"Shape by Point applied.\nCurrent points: {currentCount}");
+                            $"Shape by Point committed.\nCurrent points: {currentCount}");
                         continue;
                     }
 

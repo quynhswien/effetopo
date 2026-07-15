@@ -122,6 +122,67 @@ namespace effetopo.Services
             Log.Information("ModifyTopo: {Summary}", result.Summary);
             return result;
         }
+
+        public sealed class SimulateShapeByPointResult
+        {
+            public List<SculptVertexSnapshot> Vertices;
+            public int PointsAdded;
+            public int VerticesModified;
+        }
+
+        /// <summary>In-memory shape stamp for draft preview (no Revit geometry changes).</summary>
+        public static SimulateShapeByPointResult SimulateShapeByPoint(
+            Document doc,
+            Toposolid toposolid,
+            IList<SculptVertexSnapshot> vertices,
+            XYZ center,
+            ModifyTopoOptions options)
+        {
+            if (vertices == null || center == null || options == null)
+                throw new ArgumentNullException();
+
+            var working = vertices
+                .Select(v => new SculptVertexSnapshot { X = v.X, Y = v.Y, Z = v.Z })
+                .ToList();
+            int countBefore = working.Count;
+            const double xyTol = 0.15;
+            double radius = Math.Max(options.ShapeRadiusFeet, 0.1);
+
+            var addPoints = ComputeShapeByPointAddPreviewPoints(doc, toposolid, center, options, working);
+            foreach (XYZ pt in addPoints)
+            {
+                bool exists = working.Any(v => HorizontalDistance(v.X, v.Y, pt.X, pt.Y) < xyTol);
+                if (exists) continue;
+                working.Add(new SculptVertexSnapshot { X = pt.X, Y = pt.Y, Z = pt.Z });
+            }
+
+            int pointsAdded = working.Count - countBefore;
+
+            double centerOriginalZ = GetModelSurfaceZ(doc, toposolid, working, center.X, center.Y, radius)
+                ?? center.Z;
+            double targetZ = centerOriginalZ + options.ShapeDeltaFeet;
+            int verticesModified = 0;
+            const double zTolerance = 1e-6;
+
+            foreach (SculptVertexSnapshot v in working)
+            {
+                double dist = HorizontalDistance(v.X, v.Y, center.X, center.Y);
+                if (dist > radius) continue;
+
+                double w = ComputeFalloff(dist / radius, options.ShapeFalloff);
+                double newZ = v.Z + (targetZ - centerOriginalZ) * w;
+                if (Math.Abs(newZ - v.Z) > zTolerance)
+                    verticesModified++;
+                v.Z = newZ;
+            }
+
+            return new SimulateShapeByPointResult
+            {
+                Vertices = working,
+                PointsAdded = pointsAdded,
+                VerticesModified = verticesModified
+            };
+        }
 #endif
 
         private static string BuildSummary(ModifyTopoOptions options, int modified, int added, int removed, int afterCount)

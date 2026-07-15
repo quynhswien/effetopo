@@ -19,6 +19,7 @@ namespace effetopo.Views
 
         public event EventHandler LiveOptionsChanged;
         public event EventHandler RequestPickAndApplyStamp;
+        public event EventHandler RequestUndoDraftStamp;
 
         public ModifyTopoOptions? SelectedOptions { get; private set; }
 
@@ -121,6 +122,11 @@ namespace effetopo.Views
         {
             if (PreviewStatusText != null)
                 PreviewStatusText.Text = message ?? string.Empty;
+        }
+
+        public void SetDraftStampCount(int count)
+        {
+            UndoBtn.IsEnabled = count > 0;
         }
 
         private void WireLivePreviewEvents()
@@ -290,14 +296,15 @@ namespace effetopo.Views
             MeshDensityBox.IsEnabled = meshTool;
             ModifyBoundaryCheck.IsEnabled = meshTool;
 
-            ShowPreviewCheck.IsEnabled = tool == ModifyTopoTool.InflateSurface;
+            ShowPreviewCheck.IsEnabled = shapeTool || tool == ModifyTopoTool.InflateSurface;
             PickApplyBtn.Visibility = shapeTool ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
             ApplyBtn.Visibility = shapeTool ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible;
 
             if (shapeTool)
             {
-                ShowPreviewCheck.IsChecked = false;
-                SetPreviewStatus("Bấm «Pick & Apply Stamp» rồi chọn điểm trên toposolid (Revit sẽ hỏi pick).");
+                ShowPreviewCheck.IsChecked = true;
+                SetPreviewStatus("Bấm «Pick & Preview Stamp» để thêm stamp vào draft. Ok mới ghi vào topo.");
+                SetDraftStampCount(0);
             }
 
             double inactiveOpacity = 0.45;
@@ -358,6 +365,12 @@ namespace effetopo.Views
 
         private void Undo_Click(object sender, RoutedEventArgs e)
         {
+            if (_selectedTool == ModifyTopoTool.ShapeByPoint)
+            {
+                RequestUndoDraftStamp?.Invoke(this, EventArgs.Empty);
+                return;
+            }
+
             MessageBox.Show(this, "Undo is available via Revit Undo (Ctrl+Z) after each Apply.",
                 "Undo", MessageBoxButton.OK, MessageBoxImage.Information);
         }

@@ -1,6 +1,4 @@
 using System;
-using System.Runtime.InteropServices;
-using System.Windows.Interop;
 using System.Windows.Threading;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -12,7 +10,7 @@ namespace effetopo.Services
 {
 #if REVIT2024_OR_GREATER
     /// <summary>
-    /// Shape-by-Point: SlabShapeEditor enabled + explicit PickPoint to apply stamp.
+    /// Shape-by-Point: stage stamps in draft memory + DirectShape preview; commit on Ok.
     /// </summary>
     internal sealed class ModifyTopoPreviewCoordinator : IDisposable
     {
@@ -21,6 +19,9 @@ namespace effetopo.Services
         private readonly Toposolid _toposolid;
         private readonly ModifyTopoDialog _dialog;
         private readonly ModifyTopoSubElementSession _subElementSession;
+        private readonly ModifyTopoDraftSession _draftSession;
+        private readonly ModifyTopoPreviewSurface _previewSurface;
+        private readonly ModifyTopoGeometrySurfaceCache _geometryCache;
         private readonly DispatcherTimer _timer;
 
         private string _lastStatus = string.Empty;
@@ -34,6 +35,9 @@ namespace effetopo.Services
             _toposolid = toposolid;
             _dialog = dialog;
             _subElementSession = new ModifyTopoSubElementSession(_doc, _uidoc, toposolid);
+            _draftSession = new ModifyTopoDraftSession(_doc, toposolid);
+            _previewSurface = new ModifyTopoPreviewSurface(_doc);
+            _geometryCache = new ModifyTopoGeometrySurfaceCache(toposolid);
 
             _timer = new DispatcherTimer(DispatcherPriority.Background, dialog.Dispatcher)
             {
@@ -42,13 +46,27 @@ namespace effetopo.Services
             _timer.Tick += OnTimerTick;
         }
 
+        public bool HasPendingDraft => _draftSession?.HasPendingChanges == true;
+
+        public ModifyTopoResult CommitDraftIfPending()
+        {
+            if (_draftSession == null || !_draftSession.HasPendingChanges)
+                return null;
+
+            _previewSurface.Clear();
+            ModifyTopoResult result = _draftSession.Commit();
+            try { _uidoc.RefreshActiveView(); } catch { }
+            return result;
+        }
+
         public void Start()
         {
-            _dialog.RequestPickAndApplyStamp += OnRequestPickAndApply;
+            _dialog.RequestPickAndApplyStamp += OnRequestPickAndPreview;
+            _dialog.RequestUndoDraftStamp += OnRequestUndoDraft;
             _dialog.LiveOptionsChanged += OnLiveOptionsChanged;
             _timer.Start();
-            EnsureShapeByPointMode();
-            Log.Debug("ModifyTopo coordinator started (PickPoint apply mode).");
+            UpdateDraftUi();
+            Log.Debug("ModifyTopo coordinator started (draft preview mode).");
         }
 
         public void Dispose()
@@ -57,26 +75,16 @@ namespace effetopo.Services
             _timer.Tick -= OnTimerTick;
             if (_dialog != null)
             {
-                _dialog.RequestPickAndApplyStamp -= OnRequestPickAndApply;
+                _dialog.RequestPickAndApplyStamp -= OnRequestPickAndPreview;
+                _dialog.RequestUndoDraftStamp -= OnRequestUndoDraft;
                 _dialog.LiveOptionsChanged -= OnLiveOptionsChanged;
             }
+            _previewSurface.Clear();
             _subElementSession.Dispose();
             try { _uidoc.RefreshActiveView(); } catch { }
         }
 
-        private void OnLiveOptionsChanged(object sender, EventArgs e) => EnsureShapeByPointMode();
-
-        private void EnsureShapeByPointMode()
-        {
-            if (!_dialog.TryGetLiveOptions(out ModifyTopoOptions options) ||
-                options.Tool != ModifyTopoTool.ShapeByPoint)
-                return;
-
-            if (_subElementSession.TryEnable())
-                SetStatus("Bấm «Pick & Apply Stamp» rồi chọn điểm trên toposolid.");
-            else
-                SetStatus("Could not enable Modify Sub Elements on this Toposolid.");
-        }
+        private void OnLiveOptionsChanged(object sender, EventArgs e) => RefreshDraftPreview();
 
         private void OnTimerTick(object sender, EventArgs e)
         {
@@ -86,11 +94,22 @@ namespace effetopo.Services
             if (!_dialog.TryGetLiveOptions(out ModifyTopoOptions options) ||
                 options.Tool != ModifyTopoTool.ShapeByPoint)
                 return;
-
-            _subElementSession.TryEnable();
         }
 
-        private void OnRequestPickAndApply(object sender, EventArgs e)
+        private void OnRequestUndoDraft(object sender, EventArgs e)
+        {
+            if (!_draftSession.TryUndoLastStamp())
+            {
+                SetStatus("Không có stamp nào để undo.");
+                return;
+            }
+
+            UpdateDraftUi();
+            RefreshDraftPreview();
+            SetStatus($"Đã undo — còn {_draftSession.StampCount} stamp trong draft.");
+        }
+
+        private void OnRequestPickAndPreview(object sender, EventArgs e)
         {
             if (_pickInProgress || !_dialog.TryGetLiveOptions(out ModifyTopoOptions options))
                 return;
@@ -102,22 +121,27 @@ namespace effetopo.Services
             try
             {
                 _dialog.Hide();
-                _subElementSession.TryEnable();
 
                 XYZ pick = _uidoc.Selection.PickPoint(
                     ObjectSnapTypes.Nearest | ObjectSnapTypes.Intersections,
-                    "Click a point on the Toposolid surface to apply the stamp");
+                    "Chọn điểm trên Toposolid để preview stamp (Ok để áp dụng thật)");
 
-                ApplyShapeByPoint(pick, options);
+                ModifyTopoDraftStampResult staged = _draftSession.StageStamp(pick, options);
+                UpdateDraftUi();
+                RefreshDraftPreview();
+
+                SetStatus(
+                    $"Draft #{staged.StampIndex}: +{staged.PointsAdded} điểm, " +
+                    $"{staged.VerticesModified} đỉnh — tổng preview {_draftSession.DraftPointCount} điểm. Bấm Ok để commit.");
             }
             catch (Autodesk.Revit.Exceptions.OperationCanceledException)
             {
-                SetStatus("Pick cancelled — try again.");
+                SetStatus("Đã hủy pick — thử lại.");
             }
             catch (Exception ex)
             {
-                Log.Warning(ex, "Pick and apply stamp failed");
-                SetStatus($"Error: {ex.Message}");
+                Log.Warning(ex, "Pick and preview stamp failed");
+                SetStatus($"Lỗi: {ex.Message}");
             }
             finally
             {
@@ -127,25 +151,37 @@ namespace effetopo.Services
             }
         }
 
-        private void ApplyShapeByPoint(XYZ center, ModifyTopoOptions options)
+        private void UpdateDraftUi()
         {
-            ModifyTopoResult result;
-            using (Transaction tx = new Transaction(_doc, "Shape by Point"))
+            _dialog.UpdatePointCounts(_draftSession.OriginalPointCount, _draftSession.DraftPointCount);
+            _dialog.SetDraftStampCount(_draftSession.StampCount);
+        }
+
+        private void RefreshDraftPreview()
+        {
+            if (!_dialog.TryGetLiveOptions(out ModifyTopoOptions options) ||
+                options.Tool != ModifyTopoTool.ShapeByPoint ||
+                !options.ShowPreview ||
+                !_draftSession.HasPendingChanges)
             {
-                tx.Start();
-                result = ModifyTopoService.Instance.Apply(_doc, _toposolid, options, center);
-                tx.Commit();
+                if (!_draftSession.HasPendingChanges)
+                    _previewSurface.Clear();
+                return;
             }
 
-            _subElementSession.TryEnable();
-            _dialog.UpdatePointCounts(result.OriginalPointCount, result.PointsAfterModification);
-            SetStatus(
-                $"Applied — {result.VerticesModified} vertices updated, {result.PointsAdded} added, " +
-                $"{result.PointsAfterModification} total points");
+            View view = _doc.ActiveView;
+            if (view == null) return;
 
-            Log.Information(
-                "Shape by Point at ({X:F2},{Y:F2}): modified={Modified}, added={Added}, total={Total}",
-                center.X, center.Y, result.VerticesModified, result.PointsAdded, result.PointsAfterModification);
+            _previewSurface.EnsureBaseOverlay(_geometryCache, view);
+
+            ModifyTopoDraftSession.StampRecord last = _draftSession.GetLastStamp();
+            var previewPoints = _draftSession.GetAllPreviewPoints();
+            if (last != null)
+            {
+                _previewSurface.UpdatePreview(view, last.Center, last.Options, previewPoints);
+            }
+
+            try { _uidoc.RefreshActiveView(); } catch { }
         }
 
         private void SetStatus(string message)
