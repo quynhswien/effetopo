@@ -46,6 +46,18 @@ namespace effetopo.Services
 
         public IReadOnlyList<Solid> Solids => _solids;
 
+        public IEnumerable<SurfaceTriangle> GetTrianglesInBounds(
+            double minX, double minY, double maxX, double maxY)
+        {
+            foreach (SurfaceTriangle tri in _triangles)
+            {
+                if (tri.MaxX < minX || tri.MinX > maxX ||
+                    tri.MaxY < minY || tri.MinY > maxY)
+                    continue;
+                yield return tri;
+            }
+        }
+
         /// <summary>Top surface elevation at XY from display mesh (highest hit).</summary>
         public double? TryGetSurfaceZ(double x, double y)
         {

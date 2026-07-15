@@ -16,14 +16,20 @@ namespace effetopo.Services
     {
         private const string BaseName = "EFFETOPO_PREVIEW_BASE";
         private const string HoverName = "EFFETOPO_PREVIEW_HOVER";
+        private const string DraftShellName = "EFFETOPO_PREVIEW_DRAFT_SHELL";
+        private const string DeltaVolumeName = "EFFETOPO_PREVIEW_DELTA";
         private const string LabelName = "EFFETOPO_PREVIEW_LABEL";
 
         private readonly Document _doc;
         private ElementId _baseId = ElementId.InvalidElementId;
         private ElementId _hoverId = ElementId.InvalidElementId;
+        private ElementId _draftShellId = ElementId.InvalidElementId;
+        private ElementId _deltaVolumeId = ElementId.InvalidElementId;
         private ElementId _labelId = ElementId.InvalidElementId;
         private ElementId _lastViewId = ElementId.InvalidElementId;
+        private ElementId _dimmedTopoId = ElementId.InvalidElementId;
         private string _lastPreviewKey = string.Empty;
+        private string _lastDraftKey = string.Empty;
 
         public ModifyTopoPreviewSurface(Document doc)
         {
@@ -69,6 +75,123 @@ namespace effetopo.Services
                     if (tx.HasStarted() && !tx.HasEnded()) tx.RollBack();
                 }
             }
+        }
+
+        /// <summary>
+        /// Draft preview: yellow deformed surface shell + semi-transparent delta volume vs existing mesh.
+        /// </summary>
+        public void UpdateDraftPreview(
+            View view,
+            ElementId toposolidId,
+            ModifyTopoGeometrySurfaceCache geometry,
+            IReadOnlyList<ModifyTopoService.SculptVertexSnapshot> baseVertices,
+            IReadOnlyList<ModifyTopoService.SculptVertexSnapshot> workingVertices,
+            IEnumerable<ModifyTopoDraftSession.StampRecord> stamps,
+            int stampCount)
+        {
+            if (_doc == null || view == null || geometry == null)
+                return;
+
+            ModifyTopoDraftSurfaceBuilder.GetBoundsFromStamps(stamps, out double minX, out double minY, out double maxX, out double maxY);
+            double zChecksum = 0;
+            if (workingVertices != null)
+            {
+                foreach (var v in workingVertices)
+                    zChecksum += v.Z;
+            }
+
+            string key = string.Format(CultureInfo.InvariantCulture,
+                "draft:{0}:{1}:{2:F1}",
+                stampCount, workingVertices?.Count ?? 0, zChecksum);
+            if (key == _lastDraftKey)
+                return;
+            _lastDraftKey = key;
+
+            ModifyTopoDraftSurfaceBuilder.DraftPreviewGeometry built =
+                ModifyTopoDraftSurfaceBuilder.Build(
+                    geometry, baseVertices, workingVertices, stamps, minX, minY, maxX, maxY);
+
+            var allPreviewSolids = new List<GeometryObject>();
+            allPreviewSolids.AddRange(built.DeltaVolumes);
+            allPreviewSolids.AddRange(built.DraftSurface);
+
+            using (Transaction tx = new Transaction(_doc, "Update Draft Topo Preview"))
+            {
+                tx.Start();
+                try
+                {
+                    ClearElement(ref _hoverId);
+                    ClearElement(ref _draftShellId);
+                    ClearElement(ref _deltaVolumeId);
+                    ClearAllPreviewLabels();
+
+                    if (allPreviewSolids.Count > 0)
+                    {
+                        var ds = DirectShape.CreateElement(_doc, new ElementId(BuiltInCategory.OST_GenericModel));
+                        ds.SetShape(allPreviewSolids);
+                        ds.Name = DraftShellName;
+                        _draftShellId = ds.Id;
+                        ApplySurfaceStyle(view, _draftShellId, new Color(255, 200, 0), 5);
+                    }
+                    else
+                    {
+                        Log.Warning(
+                            "Draft preview: no visible solids ({TriCount} tris). Check Show Preview and stamp size.",
+                            built.ChangedTriangleCount);
+                    }
+
+                    if (stampCount > 0 && stamps != null)
+                    {
+                        ModifyTopoDraftSession.StampRecord last = null;
+                        foreach (ModifyTopoDraftSession.StampRecord s in stamps)
+                            last = s;
+                        if (last?.Center != null)
+                        {
+                            CreateDraftLabel(
+                                view, last.Center,
+                                $"{stampCount} stamp — {allPreviewSolids.Count} solids");
+                        }
+                    }
+
+                    ApplyTopoDimming(view, toposolidId, dim: true);
+                    _lastViewId = view.Id;
+                    _doc.Regenerate();
+                    tx.Commit();
+
+                    Log.Information(
+                        "Draft preview: {TriCount} tris, {DraftCount} draft solids, {DeltaCount} delta solids",
+                        built.ChangedTriangleCount, built.DraftSurface.Count, built.DeltaVolumes.Count);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning("Update draft preview failed: {Error}", ex.Message);
+                    if (tx.HasStarted() && !tx.HasEnded()) tx.RollBack();
+                }
+            }
+        }
+
+        private void ApplyTopoDimming(View view, ElementId toposolidId, bool dim)
+        {
+            if (view == null || toposolidId == null || toposolidId == ElementId.InvalidElementId)
+                return;
+
+            try
+            {
+                if (dim)
+                {
+                    var ogs = new OverrideGraphicSettings();
+                    ogs.SetSurfaceTransparency(72);
+                    ogs.SetProjectionLineColor(new Color(140, 140, 140));
+                    view.SetElementOverrides(toposolidId, ogs);
+                    _dimmedTopoId = toposolidId;
+                }
+                else if (_dimmedTopoId != ElementId.InvalidElementId)
+                {
+                    view.SetElementOverrides(_dimmedTopoId, new OverrideGraphicSettings());
+                    _dimmedTopoId = ElementId.InvalidElementId;
+                }
+            }
+            catch { }
         }
 
         public void UpdatePreview(
@@ -138,15 +261,22 @@ namespace effetopo.Services
         public void Clear()
         {
             _lastPreviewKey = string.Empty;
+            _lastDraftKey = string.Empty;
             using (Transaction tx = new Transaction(_doc, "Clear Topo Preview"))
             {
                 tx.Start();
                 try
                 {
+                    View view = _lastViewId != ElementId.InvalidElementId
+                        ? _doc.GetElement(_lastViewId) as View
+                        : null;
+                    ApplyTopoDimming(view, _dimmedTopoId, dim: false);
                     ClearOverrides();
                     ClearElement(ref _hoverId);
-                    ClearElement(ref _labelId);
+                    ClearAllPreviewLabels();
                     ClearElement(ref _baseId);
+                    ClearElement(ref _draftShellId);
+                    ClearElement(ref _deltaVolumeId);
                     _doc.Regenerate();
                     tx.Commit();
                 }
@@ -154,6 +284,58 @@ namespace effetopo.Services
                 {
                     if (tx.HasStarted() && !tx.HasEnded()) tx.RollBack();
                 }
+            }
+        }
+
+        private void ClearAllPreviewLabels()
+        {
+            ClearElement(ref _labelId);
+            try
+            {
+                var toDelete = new List<ElementId>();
+                foreach (Element e in new FilteredElementCollector(_doc)
+                    .OfClass(typeof(TextNote))
+                    .WhereElementIsNotElementType())
+                {
+                    if (e is TextNote note && note.Text != null &&
+                        (note.Text.Contains("stamp") || note.Text.Contains("solids")))
+                        toDelete.Add(note.Id);
+                }
+                if (toDelete.Count > 0)
+                    _doc.Delete(toDelete);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Clear preview labels: {Error}", ex.Message);
+            }
+        }
+
+        private void CreateDraftLabel(View view, XYZ center, string text)
+        {
+            try
+            {
+                ElementId textTypeId = _doc.GetDefaultElementTypeId(ElementTypeGroup.TextNoteType);
+                if (textTypeId == ElementId.InvalidElementId)
+                    return;
+
+                var labelPos = new XYZ(center.X, center.Y, center.Z + 2.0);
+                var opts = new TextNoteOptions(textTypeId)
+                {
+                    HorizontalAlignment = HorizontalTextAlignment.Center
+                };
+                TextNote note = TextNote.Create(_doc, view.Id, labelPos, text, opts);
+                if (note != null)
+                {
+                    note.Name = LabelName;
+                    _labelId = note.Id;
+                    var ogs = new OverrideGraphicSettings();
+                    ogs.SetProjectionLineColor(new Color(255, 220, 0));
+                    view.SetElementOverrides(_labelId, ogs);
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Draft label failed: {Error}", ex.Message);
             }
         }
 
@@ -271,7 +453,30 @@ namespace effetopo.Services
             ogs.SetSurfaceBackgroundPatternColor(color);
             ogs.SetCutLineColor(color);
             ogs.SetSurfaceTransparency(transparency);
+            ogs.SetSurfaceForegroundPatternVisible(true);
+            ogs.SetSurfaceBackgroundPatternVisible(true);
+            try
+            {
+                ogs.SetSurfaceForegroundPatternId(GetSolidFillPatternId());
+            }
+            catch { }
             view.SetElementOverrides(id, ogs);
+        }
+
+        private ElementId GetSolidFillPatternId()
+        {
+            try
+            {
+                return new FilteredElementCollector(_doc)
+                    .OfClass(typeof(FillPatternElement))
+                    .Cast<FillPatternElement>()
+                    .FirstOrDefault(fp => fp.GetFillPattern().IsSolidFill)?.Id
+                    ?? ElementId.InvalidElementId;
+            }
+            catch
+            {
+                return ElementId.InvalidElementId;
+            }
         }
 
         private void ClearOverrides()
@@ -281,7 +486,7 @@ namespace effetopo.Services
             if (view == null) return;
 
             var reset = new OverrideGraphicSettings();
-            foreach (ElementId id in new[] { _baseId, _hoverId, _labelId })
+            foreach (ElementId id in new[] { _baseId, _hoverId, _labelId, _draftShellId, _deltaVolumeId })
             {
                 if (id != null && id != ElementId.InvalidElementId)
                 {

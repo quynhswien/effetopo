@@ -172,14 +172,14 @@ namespace effetopo.Services
             View view = _doc.ActiveView;
             if (view == null) return;
 
-            _previewSurface.EnsureBaseOverlay(_geometryCache, view);
-
-            ModifyTopoDraftSession.StampRecord last = _draftSession.GetLastStamp();
-            var previewPoints = _draftSession.GetAllPreviewPoints();
-            if (last != null)
-            {
-                _previewSurface.UpdatePreview(view, last.Center, last.Options, previewPoints);
-            }
+            _previewSurface.UpdateDraftPreview(
+                view,
+                _toposolid.Id,
+                _geometryCache,
+                _draftSession.GetBaseVertices(),
+                _draftSession.GetWorkingVertices(),
+                _draftSession.Stamps,
+                _draftSession.StampCount);
 
             try { _uidoc.RefreshActiveView(); } catch { }
         }

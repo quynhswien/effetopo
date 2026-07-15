@@ -753,18 +753,20 @@ namespace effetopo.Services
         }
 
         public static double? InterpolateSurfaceZ(
-            IList<SculptVertexSnapshot> vertices, double x, double y, double maxRadius)
+            IEnumerable<SculptVertexSnapshot> vertices, double x, double y, double maxRadius)
         {
-            if (vertices == null || vertices.Count == 0) return null;
+            if (vertices == null) return null;
 
             double weightSum = 0;
             double zSum = 0;
             maxRadius = Math.Max(maxRadius, 0.5);
             double bestDist = double.MaxValue;
-            double bestZ = vertices[0].Z;
+            double bestZ = 0;
+            bool any = false;
 
             foreach (SculptVertexSnapshot v in vertices)
             {
+                any = true;
                 double dist = HorizontalDistance(v.X, v.Y, x, y);
                 if (dist < bestDist)
                 {
@@ -777,6 +779,7 @@ namespace effetopo.Services
                 zSum += v.Z * w;
             }
 
+            if (!any) return null;
             if (weightSum < 1e-9) return bestZ;
             return zSum / weightSum;
         }

@@ -99,6 +99,12 @@ namespace effetopo.Services
         public StampRecord GetLastStamp() =>
             _stamps.Count > 0 ? _stamps[_stamps.Count - 1] : null;
 
+        public IReadOnlyList<ModifyTopoService.SculptVertexSnapshot> GetBaseVertices() =>
+            _baseVertices;
+
+        public IReadOnlyList<ModifyTopoService.SculptVertexSnapshot> GetWorkingVertices() =>
+            _workingVertices;
+
         public ModifyTopoResult Commit()
         {
             if (_stamps.Count == 0)
