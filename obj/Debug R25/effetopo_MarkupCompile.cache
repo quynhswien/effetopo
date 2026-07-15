@@ -10,11 +10,11 @@ none
 false
 TRACE;REVIT2025;REVIT2022_OR_GREATER;REVIT2023_OR_GREATER;REVIT2024_OR_GREATER;REVIT2025_OR_GREATER;NETCORE;DEBUG;DEBUG_R25;NET;NET8_0;NETCOREAPP;WINDOWS;WINDOWS7_0;NET5_0_OR_GREATER;NET6_0_OR_GREATER;NET7_0_OR_GREATER;NET8_0_OR_GREATER;NETCOREAPP3_0_OR_GREATER;NETCOREAPP3_1_OR_GREATER;WINDOWS7_0_OR_GREATER;REVIT2022_OR_GREATER;REVIT2023_OR_GREATER;REVIT2024_OR_GREATER;REVIT2025;REVIT2025_OR_GREATER
 
-6673701900
+7-1101281299
 
-451759053349
+50198247097
 2061170422142
-Views\BoundaryCleanupOffsetDialog.xaml;Views\DownloadUpdateView.xaml;Views\effetopo.xaml;Views\FloorBoundarySamplingDialog.xaml;Views\LicenseActivationView.xaml;Views\LicenseWarningView.xaml;
+Views\BoundaryCleanupOffsetDialog.xaml;Views\DownloadUpdateView.xaml;Views\effetopo.xaml;Views\FloorBoundarySamplingDialog.xaml;Views\LicenseActivationView.xaml;Views\LicenseWarningView.xaml;Views\ModifyTopoDialog.xaml;
 
 False
 

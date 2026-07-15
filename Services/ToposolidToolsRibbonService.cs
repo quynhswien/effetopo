@@ -139,6 +139,8 @@ namespace effetopo.Services
                     _splitButton.AddPushButton<MergeProposalToposolidCommand>(definition.CommandId),
                 _ when definition.CommandId == FloorFollowTopoCommand.COMMAND_NAME =>
                     _splitButton.AddPushButton<FloorFollowTopoCommand>(definition.CommandId),
+                _ when definition.CommandId == ModifyTopoCommand.COMMAND_NAME =>
+                    _splitButton.AddPushButton<ModifyTopoCommand>(definition.CommandId),
                 _ => null
             };
 
@@ -169,7 +171,12 @@ namespace effetopo.Services
                     FloorFollowTopoCommand.COMMAND_NAME,
                     "Floor Follow\nTopo",
                     "Floor Follow Toposolid\nMake Floor follow Toposolid surface elevation",
-                    isFloorCommand: true)
+                    isFloorCommand: true),
+                new ToposolidToolDefinition(
+                    ModifyTopoCommand.COMMAND_NAME,
+                    "Modify\nTopo",
+                    "Modify Toposolid\nSculpt surface: inflate, mesh control, shape by point, smooth",
+                    isFloorCommand: false)
             };
         }
 

@@ -68,3 +68,5 @@ E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Deb
 E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\effetopo.sourcelink.json
 E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\FloorBoundarySamplingDialog.baml
 E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\FloorBoundarySamplingDialog.g.cs
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\ModifyTopoDialog.baml
+E:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Debug R25\Views\ModifyTopoDialog.g.cs

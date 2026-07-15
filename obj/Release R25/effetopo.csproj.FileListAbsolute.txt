@@ -32,3 +32,5 @@ e:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Rel
 e:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Release R25\effetopo.dll
 e:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Release R25\refint\effetopo.dll
 e:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Release R25\ref\effetopo.dll
+e:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Release R25\Views\ModifyTopoDialog.baml
+e:\SynologyDrive\1.XO Studio\01.effe\04- Production\New Feature\effetopo\obj\Release R25\Views\ModifyTopoDialog.g.cs
