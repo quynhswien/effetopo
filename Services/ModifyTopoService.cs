@@ -73,14 +73,14 @@ namespace effetopo.Services
 
             editor.Enable();
 
-            var vertices = CollectVertices(editor);
+            var vertices = CollectVertices(doc, toposolid, editor);
             int originalCount = vertices.Count;
             if (originalCount == 0)
                 throw new InvalidOperationException("Toposolid has no SlabShape vertices to modify.");
 
             double levelElev = GetLevelElevation(doc, toposolid);
             double heightOffset = GetHeightOffsetFromLevel(toposolid);
-            var state = new SculptState(vertices, levelElev, heightOffset);
+            var state = new SculptState(doc, toposolid, vertices, levelElev, heightOffset);
 
             switch (options.Tool)
             {
@@ -146,14 +146,23 @@ namespace effetopo.Services
 
         private sealed class SculptState
         {
+            public Document Doc;
+            public Toposolid Toposolid;
             public List<SculptVertex> Vertices;
             public double LevelElevation;
             public double HeightOffset;
             public int PointsAdded;
             public int PointsRemoved;
 
-            public SculptState(List<SculptVertex> vertices, double levelElev, double heightOffset)
+            public SculptState(
+                Document doc,
+                Toposolid toposolid,
+                List<SculptVertex> vertices,
+                double levelElev,
+                double heightOffset)
             {
+                Doc = doc;
+                Toposolid = toposolid;
                 Vertices = vertices;
                 LevelElevation = levelElev;
                 HeightOffset = heightOffset;
@@ -163,25 +172,57 @@ namespace effetopo.Services
                 modelZ - LevelElevation - HeightOffset;
         }
 
-        private static List<SculptVertex> CollectVertices(SlabShapeEditor editor)
+        private static List<SculptVertex> CollectVertices(
+            Document doc,
+            Toposolid toposolid,
+            SlabShapeEditor editor)
         {
             var list = new List<SculptVertex>();
             if (editor?.SlabShapeVertices == null) return list;
+
+            var rawSnapshots = new List<SculptVertexSnapshot>();
+            foreach (SlabShapeVertex v in editor.SlabShapeVertices)
+            {
+                if (v?.Position == null) continue;
+                XYZ p = v.Position;
+                rawSnapshots.Add(new SculptVertexSnapshot { X = p.X, Y = p.Y, Z = p.Z });
+            }
 
             foreach (SlabShapeVertex v in editor.SlabShapeVertices)
             {
                 if (v?.Position == null) continue;
                 XYZ p = v.Position;
+                double modelZ = VertexZToModelZ(doc, toposolid, rawSnapshots, p.Z);
                 list.Add(new SculptVertex
                 {
                     RevitVertex = v,
                     X = p.X,
                     Y = p.Y,
-                    Z = p.Z,
-                    OriginalZ = p.Z
+                    Z = modelZ,
+                    OriginalZ = modelZ
                 });
             }
             return list;
+        }
+
+        private static SlabShapeVertex FindSlabShapeVertexNearXY(
+            SlabShapeEditor editor, double x, double y, double tolerance)
+        {
+            if (editor?.SlabShapeVertices == null) return null;
+
+            SlabShapeVertex best = null;
+            double bestDist = tolerance;
+            foreach (SlabShapeVertex v in editor.SlabShapeVertices)
+            {
+                if (v?.Position == null) continue;
+                double dist = HorizontalDistance(v.Position.X, v.Position.Y, x, y);
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    best = v;
+                }
+            }
+            return best;
         }
 
         private static double GetLevelElevation(Document doc, Toposolid toposolid)
@@ -250,14 +291,16 @@ namespace effetopo.Services
             ModifyTopoOptions options)
         {
             double radius = Math.Max(options.ShapeRadiusFeet, 0.1);
+            var snapshots = state.Vertices
+                .Select(v => new SculptVertexSnapshot { X = v.X, Y = v.Y, Z = v.Z })
+                .ToList();
 
-            AddShapeByPointGridPoints(doc, editor, state, center, options);
+            AddShapeByPointGridPoints(doc, toposolid, editor, state, center, options);
 
-            SculptVertex centerVertex = FindNearestVertex(state.Vertices, center.X, center.Y);
-            double centerOriginalZ = centerVertex?.Z ?? center.Z;
-            double targetZ = options.ShapeUseDelta
-                ? centerOriginalZ + options.ShapeDeltaFeet
-                : options.ShapeTargetElevationFeet;
+            double centerOriginalZ = GetModelSurfaceZ(doc, toposolid, snapshots, center.X, center.Y, radius)
+                ?? center.Z;
+
+            double targetZ = centerOriginalZ + options.ShapeDeltaFeet;
 
             foreach (SculptVertex v in state.Vertices)
             {
@@ -267,18 +310,24 @@ namespace effetopo.Services
                 double w = ComputeFalloff(dist / radius, options.ShapeFalloff);
                 v.Z = v.Z + (targetZ - centerOriginalZ) * w;
             }
+
+            RefreshRevitVertices(editor, state);
         }
 
         private static void AddShapeByPointGridPoints(
             Document doc,
+            Toposolid toposolid,
             SlabShapeEditor editor,
             SculptState state,
             XYZ center,
             ModifyTopoOptions options)
         {
-            var snapshots = state.Vertices.Select(v => new SculptVertexSnapshot { X = v.X, Y = v.Y, Z = v.Z }).ToList();
-            var addPoints = ComputeShapeByPointAddPreviewPoints(center, options, snapshots);
+            var snapshots = state.Vertices
+                .Select(v => new SculptVertexSnapshot { X = v.X, Y = v.Y, Z = v.Z })
+                .ToList();
+            var addPoints = ComputeShapeByPointAddPreviewPoints(doc, toposolid, center, options, snapshots);
             const double xyTol = 0.15;
+            int addedBefore = state.PointsAdded;
 
             foreach (XYZ pt in addPoints)
             {
@@ -286,24 +335,36 @@ namespace effetopo.Services
                     HorizontalDistance(v.X, v.Y, pt.X, pt.Y) < xyTol);
                 if (exists) continue;
 
-                if (SlabShapeEditorHelper.TryAddPoint(editor, pt))
+                double slabZ = state.ModelZToSlabOffset(pt.Z);
+                if (!SlabShapeEditorHelper.TryAddPoint(editor, new XYZ(pt.X, pt.Y, slabZ)))
+                    continue;
+
+                doc.Regenerate();
+                SlabShapeVertex vertex = FindSlabShapeVertexNearXY(editor, pt.X, pt.Y, xyTol);
+                if (vertex == null)
                 {
-                    state.PointsAdded++;
-                    state.Vertices.Add(new SculptVertex
-                    {
-                        RevitVertex = null,
-                        X = pt.X,
-                        Y = pt.Y,
-                        Z = pt.Z,
-                        OriginalZ = pt.Z
-                    });
+                    Log.Debug("DrawPoint did not create a vertex near ({X:F2}, {Y:F2})", pt.X, pt.Y);
+                    continue;
                 }
+
+                double modelZ = VertexZToModelZ(doc, toposolid, snapshots, vertex.Position.Z);
+                state.PointsAdded++;
+                state.Vertices.Add(new SculptVertex
+                {
+                    RevitVertex = vertex,
+                    X = pt.X,
+                    Y = pt.Y,
+                    Z = modelZ,
+                    OriginalZ = modelZ
+                });
             }
 
-            if (state.PointsAdded > 0)
+            if (state.PointsAdded > addedBefore)
             {
                 doc.Regenerate();
                 RefreshRevitVertices(editor, state);
+                Log.Debug("Shape by Point: added {Count} grid points via DrawPoint/AddPoint",
+                    state.PointsAdded - addedBefore);
             }
         }
 
@@ -480,7 +541,9 @@ namespace effetopo.Services
 
         private static void RefreshRevitVertices(SlabShapeEditor editor, SculptState state)
         {
-            var fresh = CollectVertices(editor);
+            if (state?.Doc == null || state.Toposolid == null) return;
+
+            var fresh = CollectVertices(state.Doc, state.Toposolid, editor);
             var byXY = fresh.ToDictionary(v => $"{Math.Round(v.X, 4)}:{Math.Round(v.Y, 4)}");
 
             foreach (SculptVertex v in state.Vertices)
@@ -583,7 +646,7 @@ namespace effetopo.Services
                    v.Y <= minY + margin || v.Y >= maxY - margin;
         }
 
-        private static double HorizontalDistance(double x1, double y1, double x2, double y2)
+        internal static double HorizontalDistance(double x1, double y1, double x2, double y2)
         {
             double dx = x1 - x2;
             double dy = y1 - y2;
@@ -620,56 +683,12 @@ namespace effetopo.Services
 #if REVIT2024_OR_GREATER
         public List<SculptVertexSnapshot> GetVertexSnapshots(Toposolid toposolid)
         {
+            var doc = toposolid?.Document;
             var editor = toposolid?.GetSlabShapeEditor();
-            if (editor == null) return new List<SculptVertexSnapshot>();
-            return CollectVertices(editor)
+            if (doc == null || editor == null) return new List<SculptVertexSnapshot>();
+            return CollectVertices(doc, toposolid, editor)
                 .Select(v => new SculptVertexSnapshot { X = v.X, Y = v.Y, Z = v.Z })
                 .ToList();
-        }
-
-        /// <summary>Grid points that would be added (no existing vertex within half cell).</summary>
-        public static List<XYZ> ComputeShapeByPointAddPreviewPoints(
-            XYZ center,
-            ModifyTopoOptions options,
-            IList<SculptVertexSnapshot> vertices)
-        {
-            var result = new List<XYZ>();
-            if (center == null || options == null || vertices == null || vertices.Count == 0)
-                return result;
-
-            double radius = Math.Max(options.ShapeRadiusFeet, 0.1);
-            double cell = Math.Max(options.CellSizeFeet, 0.25);
-            double angleRad = options.RotationDegrees * Math.PI / 180.0;
-            double cosA = Math.Cos(angleRad);
-            double sinA = Math.Sin(angleRad);
-            int cells = (int)Math.Ceiling(radius / cell) + 1;
-            const double existTol = 0.4;
-
-            for (int i = -cells; i <= cells; i++)
-            {
-                for (int j = -cells; j <= cells; j++)
-                {
-                    double lx = i * cell;
-                    double ly = j * cell;
-                    double gx = center.X + lx * cosA - ly * sinA;
-                    double gy = center.Y + lx * sinA + ly * cosA;
-
-                    if (HorizontalDistance(gx, gy, center.X, center.Y) > radius)
-                        continue;
-
-                    bool exists = vertices.Any(v =>
-                        HorizontalDistance(v.X, v.Y, gx, gy) < cell * existTol);
-                    if (exists)
-                        continue;
-
-                    double? z = InterpolateSurfaceZ(vertices, gx, gy, cell * 4);
-                    if (!z.HasValue) continue;
-
-                    result.Add(new XYZ(gx, gy, z.Value));
-                }
-            }
-
-            return result;
         }
 
         public static double? InterpolateSurfaceZ(
@@ -699,6 +718,212 @@ namespace effetopo.Services
 
             if (weightSum < 1e-9) return bestZ;
             return zSum / weightSum;
+        }
+
+        /// <summary>Resolve a 3D view for face raycasts (active view or any open 3D view).</summary>
+        public static View3D ResolveView3D(Document doc, View view)
+        {
+            if (view is View3D view3d)
+                return view3d;
+
+            if (doc == null)
+                return null;
+
+            return new FilteredElementCollector(doc)
+                .OfClass(typeof(View3D))
+                .Cast<View3D>()
+                .FirstOrDefault(v => !v.IsTemplate);
+        }
+
+        /// <summary>Raycast downward onto Toposolid solid geometry — matches what you see in the view.</summary>
+        public static double? TryRaycastToposolidSurfaceZ(Toposolid toposolid, View3D view, double x, double y)
+        {
+            if (toposolid == null || view == null)
+                return null;
+
+            BoundingBoxXYZ bb = toposolid.get_BoundingBox(null);
+            if (bb == null)
+                return null;
+
+            const double margin = 30.0;
+            try
+            {
+                var intersector = new ReferenceIntersector(
+                    toposolid.Id, FindReferenceTarget.Face, view);
+
+                ReferenceWithContext hitDown = intersector.FindNearest(
+                    new XYZ(x, y, bb.Max.Z + margin),
+                    XYZ.BasisZ.Negate());
+                XYZ gp = hitDown?.GetReference()?.GlobalPoint;
+                if (gp != null)
+                    return gp.Z;
+
+                XYZ viewDir = view.ViewDirection;
+                ReferenceWithContext hitView = intersector.FindNearest(
+                    new XYZ(x, y, bb.Max.Z + margin) - viewDir * margin,
+                    viewDir.Negate());
+                gp = hitView?.GetReference()?.GlobalPoint;
+                if (gp != null)
+                    return gp.Z;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Raycast topo surface Z failed: {Error}", ex.Message);
+            }
+
+            return null;
+        }
+
+        /// <summary>Surface Z for preview: raycast on solid first, then slab vertices + level correction.</summary>
+        public static double? GetDisplaySurfaceZ(
+            Document doc,
+            Toposolid toposolid,
+            View view,
+            IList<SculptVertexSnapshot> vertices,
+            double x,
+            double y,
+            double searchRadius)
+        {
+            View3D view3d = ResolveView3D(doc, view);
+            if (view3d != null)
+            {
+                double? rayZ = TryRaycastToposolidSurfaceZ(toposolid, view3d, x, y);
+                if (rayZ.HasValue)
+                    return rayZ.Value;
+            }
+
+            return GetModelSurfaceZ(doc, toposolid, vertices, x, y, searchRadius);
+        }
+
+        /// <summary>Slab-shape vertex Z → model elevation (handles offset vs model coords).</summary>
+        public static double VertexZToModelZ(
+            Document doc, Toposolid toposolid, IList<SculptVertexSnapshot> vertices, double vertexZ)
+        {
+            try
+            {
+                BoundingBoxXYZ bb = toposolid.get_BoundingBox(null);
+                if (bb != null && vertexZ >= bb.Min.Z - 2.0 && vertexZ <= bb.Max.Z + 2.0)
+                    return vertexZ;
+            }
+            catch { }
+
+            return GetLevelElevation(doc, toposolid) + GetHeightOffsetFromLevel(toposolid) + vertexZ;
+        }
+
+        /// <summary>Interpolated topo surface elevation in model coordinates at XY.</summary>
+        public static double? GetModelSurfaceZ(
+            Document doc,
+            Toposolid toposolid,
+            IList<SculptVertexSnapshot> vertices,
+            double x,
+            double y,
+            double searchRadius)
+        {
+            double? slabZ = InterpolateSurfaceZ(vertices, x, y, searchRadius);
+            if (!slabZ.HasValue)
+            {
+                try
+                {
+                    BoundingBoxXYZ bb = toposolid.get_BoundingBox(null);
+                    if (bb != null)
+                        return (bb.Min.Z + bb.Max.Z) * 0.5;
+                }
+                catch { }
+                return null;
+            }
+
+            return VertexZToModelZ(doc, toposolid, vertices, slabZ.Value);
+        }
+
+        public static double ComputeShapeFalloff(double t, SculptFalloffType type)
+        {
+            t = Math.Max(0, Math.Min(1, t));
+            return type switch
+            {
+                SculptFalloffType.Linear => 1.0 - t,
+                SculptFalloffType.Smooth => 1.0 - (3 * t * t - 2 * t * t * t),
+                SculptFalloffType.Constant => t < 1.0 ? 1.0 : 0.0,
+                SculptFalloffType.Gaussian => Math.Exp(-4.5 * t * t),
+                _ => 1.0 - t
+            };
+        }
+
+        /// <summary>Radial stamp points for hover preview (on topo surface + gain falloff).</summary>
+        public static List<XYZ> ComputeShapeByPointStampPoints(
+            XYZ center,
+            ModifyTopoOptions options,
+            IList<SculptVertexSnapshot> vertices,
+            Document doc,
+            Toposolid toposolid,
+            View view,
+            bool previewWithGain)
+        {
+            var result = new List<XYZ>();
+            if (center == null || options == null)
+                return result;
+
+            const int maxPoints = 120;
+            double radius = Math.Max(options.ShapeRadiusFeet, 0.1);
+            int density = Math.Max(1, Math.Min(options.ShapePointDensity, 10));
+            int ringCount = Math.Max(1, density);
+            int baseSegments = 6 + density * 2;
+
+            double centerSurfaceZ = doc != null && toposolid != null
+                ? GetDisplaySurfaceZ(doc, toposolid, view, vertices, center.X, center.Y, radius) ?? center.Z
+                : InterpolateSurfaceZ(vertices, center.X, center.Y, radius) ?? center.Z;
+
+            double centerGain = previewWithGain ? options.ShapeDeltaFeet : 0;
+            result.Add(new XYZ(center.X, center.Y, centerSurfaceZ + centerGain));
+
+            for (int ring = 1; ring <= ringCount && result.Count < maxPoints; ring++)
+            {
+                double ringRadius = radius * ring / ringCount;
+                int segments = Math.Max(6, Math.Min(24, baseSegments + ring));
+                double angleStep = 2.0 * Math.PI / segments;
+
+                for (int i = 0; i < segments && result.Count < maxPoints; i++)
+                {
+                    double angle = i * angleStep;
+                    double gx = center.X + ringRadius * Math.Cos(angle);
+                    double gy = center.Y + ringRadius * Math.Sin(angle);
+
+                    if (HorizontalDistance(gx, gy, center.X, center.Y) > radius + 0.01)
+                        continue;
+
+                    double surfaceZ = doc != null && toposolid != null
+                        ? GetDisplaySurfaceZ(doc, toposolid, view, vertices, gx, gy, ringRadius + 2) ?? centerSurfaceZ
+                        : InterpolateSurfaceZ(vertices, gx, gy, ringRadius + 2) ?? centerSurfaceZ;
+
+                    double dist = HorizontalDistance(gx, gy, center.X, center.Y);
+                    double w = previewWithGain
+                        ? ComputeShapeFalloff(dist / radius, options.ShapeFalloff)
+                        : 0;
+                    result.Add(new XYZ(gx, gy, surfaceZ + options.ShapeDeltaFeet * w));
+                }
+            }
+
+            return result;
+        }
+
+        /// <summary>Stamp points that would be newly added (no existing vertex nearby).</summary>
+        public static List<XYZ> ComputeShapeByPointAddPreviewPoints(
+            Document doc,
+            Toposolid toposolid,
+            XYZ center,
+            ModifyTopoOptions options,
+            IList<SculptVertexSnapshot> vertices)
+        {
+            var stamp = ComputeShapeByPointStampPoints(
+                center, options, vertices, doc, toposolid, null, previewWithGain: false);
+            if (vertices == null || vertices.Count == 0)
+                return stamp;
+
+            double radius = Math.Max(options.ShapeRadiusFeet, 0.1);
+            double tol = Math.Max(radius / (6 + options.ShapePointDensity * 4), 0.2);
+
+            return stamp.Where(pt =>
+                !vertices.Any(v => HorizontalDistance(v.X, v.Y, pt.X, pt.Y) < tol))
+                .ToList();
         }
 #endif
     }

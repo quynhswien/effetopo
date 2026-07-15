@@ -5,6 +5,7 @@ using System.Runtime.InteropServices;
 using System.Windows.Threading;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
+using Autodesk.Revit.UI.Events;
 using effetopo.Models;
 
 namespace effetopo.Services
@@ -14,17 +15,7 @@ namespace effetopo.Services
     internal sealed class ModifyTopoShapePointPicker
     {
         [DllImport("user32.dll")]
-        private static extern bool GetCursorPos(out POINT lpPoint);
-
-        [DllImport("user32.dll")]
         private static extern short GetAsyncKeyState(int vKey);
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct POINT
-        {
-            public int X;
-            public int Y;
-        }
 
         private const int VkLButton = 0x01;
         private const int VkEscape = 0x1B;
@@ -34,12 +25,14 @@ namespace effetopo.Services
         private readonly Toposolid _toposolid;
         private readonly ModifyTopoOptions _options;
         private readonly List<ModifyTopoService.SculptVertexSnapshot> _vertices;
+        private readonly ModifyTopoGeometrySurfaceCache _geometry;
         private readonly ModifyTopoPreviewGraphics _graphics;
 
         private XYZ _currentCenter;
         private bool _finished;
         private bool _cancelled;
         private bool _wasMouseDown;
+        private string _lastPreviewKey = string.Empty;
 
         public ModifyTopoShapePointPicker(
             UIApplication uiApp,
@@ -51,6 +44,7 @@ namespace effetopo.Services
             _toposolid = toposolid;
             _options = options;
             _vertices = ModifyTopoService.Instance.GetVertexSnapshots(toposolid);
+            _geometry = new ModifyTopoGeometrySurfaceCache(toposolid);
             _graphics = new ModifyTopoPreviewGraphics(_uidoc.Document);
         }
 
@@ -73,9 +67,10 @@ namespace effetopo.Services
             }
         }
 
-        private void OnIdling(object sender, EventArgs e)
+        private void OnIdling(object sender, IdlingEventArgs e)
         {
             if (_finished) return;
+            e.SetRaiseWithoutDelay();
 
             if (IsKeyDown(VkEscape))
             {
@@ -85,66 +80,33 @@ namespace effetopo.Services
             }
 
             bool mouseDown = IsKeyDown(VkLButton);
-            if (TryGetCursorOnToposolid(out XYZ center))
+            if (ModifyTopoViewPickHelper.TryGetHitOnToposolid(
+                    _uidoc, _toposolid, _geometry, IntPtr.Zero, out XYZ center, out ElementId viewId))
             {
                 _currentCenter = center;
                 if (_options.ShowPreview)
                 {
-                    var preview = ModifyTopoService.ComputeShapeByPointAddPreviewPoints(
-                        center, _options, _vertices);
-                    _graphics.UpdateMarkers(preview);
+                    string key = $"{center.X:F2}:{center.Y:F2}:{_options.ShapeRadiusFeet:F2}:{_options.ShapePointDensity}";
+                    if (key != _lastPreviewKey)
+                    {
+                        _lastPreviewKey = key;
+                        View view = _uidoc.Document.GetElement(viewId) as View;
+                        var preview = _geometry.BuildStampPoints(center, _options, previewWithGain: true);
+                        _graphics.UpdateMarkers(view, preview);
+                        try { _uidoc.RefreshActiveView(); } catch { }
+                    }
                 }
+            }
+            else
+            {
+                _lastPreviewKey = string.Empty;
+                _graphics.Clear();
             }
 
             if (mouseDown && !_wasMouseDown && _currentCenter != null)
                 _finished = true;
 
             _wasMouseDown = mouseDown;
-        }
-
-        private bool TryGetCursorOnToposolid(out XYZ surfacePoint)
-        {
-            surfacePoint = null;
-            try
-            {
-                if (!GetCursorPos(out POINT screen)) return false;
-
-                UIView uiView = _uidoc.GetOpenUIViews()
-                    .FirstOrDefault(v => v.ViewId == _uidoc.ActiveView.Id);
-                if (uiView == null) return false;
-
-                Autodesk.Revit.DB.Rectangle rect = uiView.GetWindowRectangle();
-                if (screen.X < rect.Left || screen.X > rect.Right ||
-                    screen.Y < rect.Top || screen.Y > rect.Bottom)
-                    return false;
-
-                double relX = screen.X - rect.Left;
-                double relY = screen.Y - rect.Top;
-                double viewWidth = rect.Right - rect.Left;
-                double viewHeight = rect.Bottom - rect.Top;
-                if (viewWidth <= 1 || viewHeight <= 1) return false;
-
-                IList<XYZ> corners = uiView.GetZoomCorners();
-                if (corners == null || corners.Count < 2) return false;
-
-                double u = relX / viewWidth;
-                double v = relY / viewHeight;
-                XYZ c0 = corners[0];
-                XYZ c1 = corners[1];
-                double x = c0.X + u * (c1.X - c0.X);
-                double y = c0.Y + v * (c1.Y - c0.Y);
-
-                double? z = ModifyTopoService.InterpolateSurfaceZ(
-                    _vertices, x, y, Math.Max(_options.ShapeRadiusFeet, 5));
-                if (!z.HasValue) return false;
-
-                surfacePoint = new XYZ(x, y, z.Value);
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
         }
 
         private static bool IsKeyDown(int virtualKey) =>

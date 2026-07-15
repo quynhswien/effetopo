@@ -45,6 +45,8 @@ namespace effetopo.Models
         public bool ShapeUseDelta { get; set; }
         public double ShapeDeltaFeet { get; set; } = 3.28084;
         public SculptFalloffType ShapeFalloff { get; set; } = SculptFalloffType.Smooth;
+        /// <summary>1–10 slider controlling radial ring count and angular resolution.</summary>
+        public int ShapePointDensity { get; set; } = 5;
 
         // Smooth Geometry
         public SmoothAlgorithm SmoothAlgorithm { get; set; } = SmoothAlgorithm.Taubin;
@@ -75,6 +77,7 @@ namespace effetopo.Models
         public bool ShapeUseDelta { get; set; } = true;
         public double ShapeDeltaDisplay { get; set; } = 1.0;
         public SculptFalloffType ShapeFalloff { get; set; } = SculptFalloffType.Smooth;
+        public int ShapePointDensity { get; set; } = 5;
 
         public SmoothAlgorithm SmoothAlgorithm { get; set; } = SmoothAlgorithm.Taubin;
         public int SmoothIterations { get; set; } = 3;
@@ -103,6 +106,7 @@ namespace effetopo.Models
                 ShapeUseDelta = ShapeUseDelta,
                 ShapeDeltaFeet = ToFeet(ShapeDeltaDisplay),
                 ShapeFalloff = ShapeFalloff,
+                ShapePointDensity = ShapePointDensity,
                 SmoothAlgorithm = SmoothAlgorithm,
                 SmoothIterations = SmoothIterations,
                 SmoothStrength = SmoothStrength,

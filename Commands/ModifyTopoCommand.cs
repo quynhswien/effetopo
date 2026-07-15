@@ -74,18 +74,28 @@ namespace effetopo.Commands
                     savedSettings = settingsService.Load();
 
                     XYZ centerPoint = null;
-                    if (options.Tool == ModifyTopoTool.ShapeByPoint)
-                    {
-                        var picker = new ModifyTopoShapePointPicker(commandData.Application, toposolid, options);
-                        centerPoint = picker.Pick();
-                        if (centerPoint == null)
-                            return Result.Cancelled;
-                    }
-                    else if (options.Tool == ModifyTopoTool.InflateSurface)
+                    if (options.Tool == ModifyTopoTool.InflateSurface)
                     {
                         centerPoint = PickPointOnToposolid(uidoc);
                         if (centerPoint == null)
                             return Result.Cancelled;
+                    }
+
+                    if (options.Tool == ModifyTopoTool.ShapeByPoint)
+                    {
+                        currentCount = topoService.CountSlabShapeVertices(toposolid);
+                        if (closeAfter)
+                        {
+                            string shapeDetail = $"Shape by Point applied.\n\n" +
+                                $"Original points: {originalCount}\n" +
+                                $"Current points: {currentCount}";
+                            RevitNotificationHandler.ShowGeneralMessageDialog("Modify Toposolid Complete", shapeDetail);
+                            break;
+                        }
+
+                        RevitNotificationHandler.ShowGeneralMessageDialog("Changes Applied",
+                            $"Shape by Point applied.\nCurrent points: {currentCount}");
+                        continue;
                     }
 
                     ModifyTopoResult result;

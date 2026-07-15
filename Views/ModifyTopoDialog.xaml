@@ -133,33 +133,37 @@
 
                             <!-- Shape by Point -->
                             <StackPanel x:Name="ShapePanel" Visibility="Collapsed">
-                                <TextBlock Text="Move a control point and propagate elevation change to surrounding vertices."
+                                <TextBlock Text="Place a radial elevation stamp on the toposolid surface via Modify Sub Elements."
                                            TextWrapping="Wrap" Foreground="#555" Margin="0,0,0,12"/>
-                                <DockPanel Margin="0,4">
-                                    <TextBlock DockPanel.Dock="Left" Width="120" VerticalAlignment="Center" Text="Radius:"/>
-                                    <TextBox x:Name="ShapeRadiusBox" Width="180" Height="28"/>
-                                    <TextBlock x:Name="ShapeRadiusUnit" Margin="8,0,0,0" VerticalAlignment="Center"/>
-                                </DockPanel>
-                                <RadioButton x:Name="ShapeDeltaMode" GroupName="ShapeMode"
-                                             Content="Move by delta" IsChecked="True" Margin="0,8,0,0"/>
-                                <DockPanel Margin="20,4,0,0">
-                                    <TextBlock DockPanel.Dock="Left" Width="120" VerticalAlignment="Center" Text="Delta elevation:"/>
-                                    <TextBox x:Name="ShapeDeltaBox" Width="180" Height="28"/>
-                                    <TextBlock x:Name="ShapeDeltaUnit" Margin="8,0,0,0" VerticalAlignment="Center"/>
-                                </DockPanel>
-                                <RadioButton x:Name="ShapeAbsoluteMode" GroupName="ShapeMode"
-                                             Content="Set absolute elevation" Margin="0,8,0,0"/>
-                                <DockPanel Margin="20,4,0,0">
-                                    <TextBlock DockPanel.Dock="Left" Width="120" VerticalAlignment="Center" Text="Target elevation:"/>
-                                    <TextBox x:Name="ShapeTargetBox" Width="180" Height="28" IsEnabled="False"/>
-                                    <TextBlock x:Name="ShapeTargetUnit" Margin="8,0,0,0" VerticalAlignment="Center"/>
-                                </DockPanel>
-                                <DockPanel Margin="0,8,0,0">
-                                    <TextBlock DockPanel.Dock="Left" Width="120" VerticalAlignment="Center" Text="Falloff:"/>
-                                    <ComboBox x:Name="ShapeFalloffCombo" Height="28"/>
-                                </DockPanel>
+                                <Grid>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition Width="130"/>
+                                        <ColumnDefinition Width="*"/>
+                                        <ColumnDefinition Width="40"/>
+                                    </Grid.ColumnDefinitions>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                        <RowDefinition Height="Auto"/>
+                                    </Grid.RowDefinitions>
+                                    <TextBlock Grid.Row="0" Grid.Column="0" VerticalAlignment="Center" Text="Gain Value:"/>
+                                    <TextBox x:Name="ShapeDeltaBox" Grid.Row="0" Grid.Column="1" Height="28" Margin="0,4"/>
+                                    <TextBlock x:Name="ShapeDeltaUnit" Grid.Row="0" Grid.Column="2" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <TextBlock Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Text="Shape Size:"/>
+                                    <TextBox x:Name="ShapeRadiusBox" Grid.Row="1" Grid.Column="1" Height="28" Margin="0,4"/>
+                                    <TextBlock x:Name="ShapeRadiusUnit" Grid.Row="1" Grid.Column="2" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                                    <TextBlock Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Text="Point Density:"/>
+                                    <Slider x:Name="ShapePointDensitySlider" Grid.Row="2" Grid.Column="1"
+                                            Minimum="1" Maximum="10" Value="5" TickFrequency="1"
+                                            IsSnapToTickEnabled="True" Margin="0,8"/>
+                                    <TextBlock x:Name="ShapePointDensityText" Grid.Row="2" Grid.Column="2"
+                                               VerticalAlignment="Center" Margin="8,0,0,0" Text="5"/>
+                                    <TextBlock Grid.Row="3" Grid.Column="0" VerticalAlignment="Center" Text="Falloff:"/>
+                                    <ComboBox x:Name="ShapeFalloffCombo" Grid.Row="3" Grid.Column="1" Height="28" Margin="0,4"/>
+                                </Grid>
                                 <TextBlock Margin="0,10,0,0" Foreground="#777" TextWrapping="Wrap"
-                                           Text="Enable Show Preview, then hover over the toposolid to see new grid points. Click Apply/Ok, then click on the surface to place."/>
+                                           Text="Click «Pick &amp; Apply Stamp», then click a point on the toposolid in the 3D view. Revit will prompt for the pick — do not click the surface directly while the dialog is open. Ok finishes."/>
                             </StackPanel>
 
                             <!-- Smooth Geometry -->
@@ -238,9 +242,14 @@
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            <CheckBox x:Name="ShowPreviewCheck" Content="Show Preview" VerticalAlignment="Center"
-                      ToolTip="Shape by Point: preview new grid points on hover. Inflate: preview brush radius."/>
+            <CheckBox x:Name="ShowPreviewCheck" Content="Show Preview" VerticalAlignment="Center" IsChecked="True"
+                      ToolTip="Inflate Surface: preview brush radius on hover. Shape by Point uses Pick &amp; Apply Stamp instead."/>
+            <TextBlock x:Name="PreviewStatusText" Grid.Column="0" Margin="140,0,0,0"
+                       VerticalAlignment="Center" Foreground="#666" FontSize="11"/>
             <StackPanel Grid.Column="1" Orientation="Horizontal">
+                <Button x:Name="PickApplyBtn" Content="Pick &amp; Apply Stamp" Width="150" Height="32" Margin="0,0,8,0"
+                        Visibility="Collapsed" Click="PickApply_Click"
+                        ToolTip="Click a point on the toposolid to apply the shape stamp (Modify Sub Elements)"/>
                 <Button x:Name="ApplyBtn" Content="Apply changes" Width="120" Height="32" Margin="0,0,8,0"
                         Click="Apply_Click"/>
                 <Button Content="Cancel" Width="90" Height="32" Margin="0,0,8,0" IsCancel="True" Click="Cancel_Click"/>

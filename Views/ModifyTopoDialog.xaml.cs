@@ -18,6 +18,7 @@ namespace effetopo.Views
         private ModifyTopoTool _selectedTool = ModifyTopoTool.InflateSurface;
 
         public event EventHandler LiveOptionsChanged;
+        public event EventHandler RequestPickAndApplyStamp;
 
         public ModifyTopoOptions? SelectedOptions { get; private set; }
 
@@ -45,8 +46,12 @@ namespace effetopo.Views
             PopulateSmoothAlgoCombo();
             WireLivePreviewEvents();
 
-            ShapeDeltaMode.Checked += (_, __) => { SetShapeElevationMode(true); RaiseLiveOptionsChanged(); };
-            ShapeAbsoluteMode.Checked += (_, __) => { SetShapeElevationMode(false); RaiseLiveOptionsChanged(); };
+            ShapePointDensitySlider.ValueChanged += (_, e) =>
+            {
+                ShapePointDensityText.Text = $"{e.NewValue:F0}";
+                RaiseLiveOptionsChanged();
+            };
+
             RotationSlider.ValueChanged += (_, e) =>
             {
                 RotationValueText.Text = $"{e.NewValue:F0}°";
@@ -59,20 +64,35 @@ namespace effetopo.Views
                 SetDefaults();
 
             SelectTool(_selectedTool);
+            SetPreviewStatus("Hover over the toposolid in the 3D view to preview points.");
         }
+
+        /// <summary>Modeless dialog result: true = Ok, false = Cancel, null = still open.</summary>
+        private bool? _modelessResult;
 
         /// <summary>Modeless show so Revit view stays interactive for hover preview.</summary>
         public bool? ShowModelessAndWait()
         {
-            var frame = new DispatcherFrame();
             bool? result = null;
-            Closed += (_, __) =>
-            {
-                result = DialogResult;
-                frame.Continue = false;
-            };
+            bool done = false;
+            Closed += (_, __) => { done = true; result = _modelessResult; };
             Show();
-            Dispatcher.PushFrame(frame);
+
+            // Short frame pumps let DispatcherTimer run without blocking Revit indefinitely.
+            while (!done)
+            {
+                var frame = new DispatcherFrame();
+                Dispatcher.CurrentDispatcher.BeginInvoke(
+                    DispatcherPriority.Background,
+                    new DispatcherOperationCallback(_ =>
+                    {
+                        frame.Continue = false;
+                        return null;
+                    }),
+                    null);
+                Dispatcher.PushFrame(frame);
+            }
+
             return result;
         }
 
@@ -97,6 +117,12 @@ namespace effetopo.Views
             ModifiedPointsText.Text = currentCount.ToString(CultureInfo.InvariantCulture);
         }
 
+        public void SetPreviewStatus(string message)
+        {
+            if (PreviewStatusText != null)
+                PreviewStatusText.Text = message ?? string.Empty;
+        }
+
         private void WireLivePreviewEvents()
         {
             void Hook(System.Windows.Controls.Control c)
@@ -116,9 +142,9 @@ namespace effetopo.Views
             Hook(MeshDensityBox);
             Hook(ShapeRadiusBox);
             Hook(ShapeDeltaBox);
-            Hook(ShapeTargetBox);
             Hook(ShowPreviewCheck);
             Hook(ShapeFalloffCombo);
+            ShapePointDensitySlider.ValueChanged += (_, __) => RaiseLiveOptionsChanged();
             SmoothStrengthSlider.ValueChanged += (_, __) => RaiseLiveOptionsChanged();
         }
 
@@ -131,7 +157,6 @@ namespace effetopo.Views
             InflateHeightUnit.Text = u;
             ShapeRadiusUnit.Text = u;
             ShapeDeltaUnit.Text = u;
-            ShapeTargetUnit.Text = u;
             CellSizeUnit.Text = u;
             MeshDensityUnit.Text = u;
         }
@@ -145,7 +170,7 @@ namespace effetopo.Views
                 InflateRadiusBox.Text = "10.00";
                 InflateHeightBox.Text = "1.00";
                 ShapeRadiusBox.Text = "10.00";
-                ShapeDeltaBox.Text = "1.00";
+                ShapeDeltaBox.Text = "2.00";
             }
             else
             {
@@ -154,9 +179,11 @@ namespace effetopo.Views
                 InflateRadiusBox.Text = "32.81";
                 InflateHeightBox.Text = "3.28";
                 ShapeRadiusBox.Text = "32.81";
-                ShapeDeltaBox.Text = "3.28";
+                ShapeDeltaBox.Text = "6.56";
             }
             ShowPreviewCheck.IsChecked = true;
+            ShapePointDensitySlider.Value = 5;
+            ShapePointDensityText.Text = "5";
             CurvatureThresholdBox.Text = "0.02";
             SmoothIterationsBox.Text = "3";
         }
@@ -199,12 +226,9 @@ namespace effetopo.Views
             SelectComboByTag(InflateFalloffCombo, settings.InflateFalloff);
 
             ShapeRadiusBox.Text = settings.ShapeRadiusDisplay.ToString(CultureInfo.InvariantCulture);
-            ShapeTargetBox.Text = settings.ShapeTargetElevationDisplay.ToString(CultureInfo.InvariantCulture);
             ShapeDeltaBox.Text = settings.ShapeDeltaDisplay.ToString(CultureInfo.InvariantCulture);
-            if (settings.ShapeUseDelta)
-                ShapeDeltaMode.IsChecked = true;
-            else
-                ShapeAbsoluteMode.IsChecked = true;
+            ShapePointDensitySlider.Value = Math.Max(1, Math.Min(settings.ShapePointDensity, 10));
+            ShapePointDensityText.Text = $"{ShapePointDensitySlider.Value:F0}";
             SelectComboByTag(ShapeFalloffCombo, settings.ShapeFalloff);
 
             SelectComboByTag(SmoothAlgoCombo, settings.SmoothAlgorithm);
@@ -226,12 +250,6 @@ namespace effetopo.Views
                     return;
                 }
             }
-        }
-
-        private void SetShapeElevationMode(bool useDelta)
-        {
-            ShapeDeltaBox.IsEnabled = useDelta;
-            ShapeTargetBox.IsEnabled = !useDelta;
         }
 
         private void ToolButton_Click(object sender, RoutedEventArgs e)
@@ -262,25 +280,45 @@ namespace effetopo.Views
         {
             bool meshTool = tool == ModifyTopoTool.MeshControl;
             bool shapeTool = tool == ModifyTopoTool.ShapeByPoint;
-            bool gridSettingsUsed = meshTool || shapeTool;
 
-            PointGridSettingsBorder.IsEnabled = gridSettingsUsed;
-            PointGridSettingsPanel.IsEnabled = gridSettingsUsed;
-            CellSizeBox.IsEnabled = gridSettingsUsed;
-            RotationSlider.IsEnabled = gridSettingsUsed;
+            PointGridSettingsBorder.IsEnabled = meshTool;
+            PointGridSettingsPanel.IsEnabled = meshTool;
+            CellSizeBox.IsEnabled = meshTool;
+            RotationSlider.IsEnabled = meshTool;
 
             MeshDensityPanel.IsEnabled = meshTool;
             MeshDensityBox.IsEnabled = meshTool;
             ModifyBoundaryCheck.IsEnabled = meshTool;
 
-            bool previewTool = shapeTool || tool == ModifyTopoTool.InflateSurface;
-            ShowPreviewCheck.IsEnabled = previewTool;
-            if (!previewTool)
+            ShowPreviewCheck.IsEnabled = tool == ModifyTopoTool.InflateSurface;
+            PickApplyBtn.Visibility = shapeTool ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+            ApplyBtn.Visibility = shapeTool ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible;
+
+            if (shapeTool)
+            {
                 ShowPreviewCheck.IsChecked = false;
+                SetPreviewStatus("Bấm «Pick & Apply Stamp» rồi chọn điểm trên toposolid (Revit sẽ hỏi pick).");
+            }
 
             double inactiveOpacity = 0.45;
-            PointGridSettingsBorder.Opacity = gridSettingsUsed ? 1.0 : inactiveOpacity;
+            PointGridSettingsBorder.Opacity = meshTool ? 1.0 : inactiveOpacity;
             MeshDensityPanel.Opacity = meshTool ? 1.0 : inactiveOpacity;
+        }
+
+        private void PickApply_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var settings = BuildSettingsFromUi(validateStrict: true);
+                ModifyTopoSettingsService.Instance.Save(settings);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            RequestPickAndApplyStamp?.Invoke(this, EventArgs.Empty);
         }
 
         private void Apply_Click(object sender, RoutedEventArgs e) => ConfirmAndClose(applyOnly: true);
@@ -296,7 +334,14 @@ namespace effetopo.Views
                 ModifyTopoSettingsService.Instance.Save(settings);
                 IsApplyAction = applyOnly;
                 CloseAfterAction = !applyOnly;
-                DialogResult = true;
+
+                if (applyOnly)
+                {
+                    SetPreviewStatus("Hover over the toposolid in the 3D view, then click to apply.");
+                    return;
+                }
+
+                _modelessResult = true;
                 Close();
             }
             catch (Exception ex)
@@ -307,7 +352,7 @@ namespace effetopo.Views
 
         private void Cancel_Click(object sender, RoutedEventArgs e)
         {
-            DialogResult = false;
+            _modelessResult = false;
             Close();
         }
 
@@ -336,10 +381,10 @@ namespace effetopo.Views
                 InflateRadiusDisplay = ParseDouble(InflateRadiusBox.Text, "Inflate Radius", validateStrict),
                 InflateHeightDisplay = ParseDouble(InflateHeightBox.Text, "Inflate Height", validateStrict),
                 InflateFalloff = GetComboEnum<SculptFalloffType>(InflateFalloffCombo),
-                ShapeRadiusDisplay = ParseDouble(ShapeRadiusBox.Text, "Shape Radius", validateStrict),
-                ShapeUseDelta = ShapeDeltaMode.IsChecked == true,
-                ShapeDeltaDisplay = ParseDouble(ShapeDeltaBox.Text, "Delta elevation", validateStrict),
-                ShapeTargetElevationDisplay = ParseDouble(ShapeTargetBox.Text, "Target elevation", validateStrict, allowZero: true),
+                ShapeRadiusDisplay = ParseDouble(ShapeRadiusBox.Text, "Shape Size", validateStrict),
+                ShapeUseDelta = true,
+                ShapeDeltaDisplay = ParseDouble(ShapeDeltaBox.Text, "Gain Value", validateStrict, allowNegative: true),
+                ShapePointDensity = (int)Math.Round(ShapePointDensitySlider.Value),
                 ShapeFalloff = GetComboEnum<SculptFalloffType>(ShapeFalloffCombo),
                 SmoothAlgorithm = GetComboEnum<SmoothAlgorithm>(SmoothAlgoCombo),
                 SmoothIterations = ParseInt(SmoothIterationsBox.Text, "Smooth iterations", validateStrict),
@@ -349,7 +394,7 @@ namespace effetopo.Views
             };
         }
 
-        private double ParseDouble(string text, string fieldName, bool validateStrict, bool allowZero = false)
+        private double ParseDouble(string text, string fieldName, bool validateStrict, bool allowZero = false, bool allowNegative = false)
         {
             string raw = (text ?? string.Empty).Trim().Replace(",", ".");
             if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
@@ -357,8 +402,10 @@ namespace effetopo.Views
                 if (!validateStrict) return 0;
                 throw new InvalidOperationException($"Please enter a valid number for {fieldName}.");
             }
-            if (validateStrict && !allowZero && value <= 0)
+            if (validateStrict && !allowZero && !allowNegative && value <= 0)
                 throw new InvalidOperationException($"{fieldName} must be greater than zero.");
+            if (validateStrict && !allowNegative && value < 0)
+                throw new InvalidOperationException($"{fieldName} cannot be negative.");
             return value;
         }
 
