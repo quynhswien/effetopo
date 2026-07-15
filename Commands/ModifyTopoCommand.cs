@@ -56,19 +56,34 @@ namespace effetopo.Commands
                 while (true)
                 {
                     var dialog = new ModifyTopoDialog(useMillimeters, originalCount, currentCount, savedSettings);
-                    if (dialog.ShowDialog() != true || dialog.SelectedOptions == null)
+                    ModifyTopoOptions options;
+                    bool closeAfter;
+
+                    using (var preview = new ModifyTopoPreviewCoordinator(commandData.Application, toposolid, dialog))
                     {
-                        Log.Information("User cancelled Modify Topo dialog");
-                        return Result.Cancelled;
+                        preview.Start();
+                        if (dialog.ShowModelessAndWait() != true || dialog.SelectedOptions == null)
+                        {
+                            Log.Information("User cancelled Modify Topo dialog");
+                            return Result.Cancelled;
+                        }
+                        options = dialog.SelectedOptions;
+                        closeAfter = dialog.CloseAfterAction;
                     }
 
-                    ModifyTopoOptions options = dialog.SelectedOptions;
                     savedSettings = settingsService.Load();
 
                     XYZ centerPoint = null;
-                    if (options.Tool == ModifyTopoTool.InflateSurface || options.Tool == ModifyTopoTool.ShapeByPoint)
+                    if (options.Tool == ModifyTopoTool.ShapeByPoint)
                     {
-                        centerPoint = PickPointOnToposolid(uidoc, toposolid);
+                        var picker = new ModifyTopoShapePointPicker(commandData.Application, toposolid, options);
+                        centerPoint = picker.Pick();
+                        if (centerPoint == null)
+                            return Result.Cancelled;
+                    }
+                    else if (options.Tool == ModifyTopoTool.InflateSurface)
+                    {
+                        centerPoint = PickPointOnToposolid(uidoc);
                         if (centerPoint == null)
                             return Result.Cancelled;
                     }
@@ -97,7 +112,7 @@ namespace effetopo.Commands
                         $"Original points: {originalCount}\n" +
                         $"Current points: {currentCount}";
 
-                    if (dialog.CloseAfterAction)
+                    if (closeAfter)
                     {
                         RevitNotificationHandler.ShowGeneralMessageDialog("Modify Toposolid Complete", detail);
                         break;
@@ -149,7 +164,7 @@ namespace effetopo.Commands
             }
         }
 
-        private static XYZ PickPointOnToposolid(UIDocument uidoc, Toposolid toposolid)
+        private static XYZ PickPointOnToposolid(UIDocument uidoc)
         {
             try
             {

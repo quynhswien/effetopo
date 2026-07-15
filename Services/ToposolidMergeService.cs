@@ -1148,7 +1148,7 @@ namespace effetopo.Services
                                 if (!pointExists)
                                 {
                                     // Add new point
-                                    editor.AddPoint(point);
+                                    SlabShapeEditorHelper.TryAddPoint(editor, point);
                                     pointsAdded++;
                                 }
                                 else if (Math.Abs(existingMap[kvp.Key] - kvp.Value) > tolerance)
@@ -1156,7 +1156,7 @@ namespace effetopo.Services
                                     // Update existing point with new Z (max elevation)
                                     // Note: SlabShapeEditor doesn't have direct update, so we add point
                                     // Revit will handle the merge
-                                    editor.AddPoint(point);
+                                    SlabShapeEditorHelper.TryAddPoint(editor, point);
                                     pointsUpdated++;
                                 }
                             }
@@ -1711,7 +1711,7 @@ namespace effetopo.Services
                                 XYZ point = new XYZ(pointUpdate.OriginalPoint.X, pointUpdate.OriginalPoint.Y, pointUpdate.NewZ);
                                 
                                 // Add/update point - SlabShapeEditor will handle merging if point exists
-                                editor.AddPoint(point);
+                                SlabShapeEditorHelper.TryAddPoint(editor, point);
                                 
                                 if (pointUpdate.IsNewPoint)
                                 {
@@ -1757,7 +1757,7 @@ namespace effetopo.Services
 
                             try
                             {
-                                editor.AddPoint(new XYZ(preservedPoint.X, preservedPoint.Y, preservedPoint.Z));
+                                SlabShapeEditorHelper.TryAddPoint(editor, new XYZ(preservedPoint.X, preservedPoint.Y, preservedPoint.Z));
                                 preservedPointsReapplied++;
                             }
                             catch (Exception ex)
@@ -2698,16 +2698,8 @@ namespace effetopo.Services
 
             double slabOffset = TopoSurveyElevationToSlabOffset(
                 surveyCoords, x, y, topoSurveyElevation, levelElevation, heightOffsetFromLevel);
-            try
-            {
-                editor.AddPoint(new XYZ(x, y, slabOffset));
-            }
-            catch (Exception ex)
-            {
-                Log.Debug("AddPoint failed at ({X}, {Y}) surveyZ={Z} offset={Offset}: {Error}",
-                    x, y, topoSurveyElevation, slabOffset, ex.Message);
+            if (!SlabShapeEditorHelper.TryAddPoint(editor, new XYZ(x, y, slabOffset)))
                 return false;
-            }
 
             vertex = FindSlabShapeVertexNearXY(editor, x, y, matchTolerance);
             if (vertex == null)
@@ -3364,8 +3356,7 @@ namespace effetopo.Services
                     throw new InvalidOperationException("Failed to create closed CurveLoop for Toposolid");
                 }
 #else
-                // Revit 2024 uses List<Curve>
-                // Create profile curves for the base rectangle
+                // Revit 2024: Create from IList<CurveLoop>
                 var profile = new List<Curve>();
                 XYZ basePoint = new XYZ(minX, minY, minZ);
                 
@@ -3374,7 +3365,9 @@ namespace effetopo.Services
                 profile.Add(Line.CreateBound(new XYZ(maxX, maxY, minZ), new XYZ(minX, maxY, minZ)));
                 profile.Add(Line.CreateBound(new XYZ(minX, maxY, minZ), basePoint));
                 
-                toposolid = Toposolid.Create(doc, toposolidType.Id, profile);
+                var curveLoop = CurveLoop.Create(profile);
+                var curveLoops = new List<CurveLoop> { curveLoop };
+                toposolid = Toposolid.Create(doc, curveLoops, toposolidType.Id, level.Id);
 #endif
 
                 if (toposolid == null)

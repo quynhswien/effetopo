@@ -5,6 +5,7 @@ using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
+using System.Windows.Threading;
 using effetopo.Models;
 using effetopo.Services;
 
@@ -15,6 +16,8 @@ namespace effetopo.Views
         private readonly bool _useMillimeters;
         private readonly string _lengthUnit;
         private ModifyTopoTool _selectedTool = ModifyTopoTool.InflateSurface;
+
+        public event EventHandler LiveOptionsChanged;
 
         public ModifyTopoOptions? SelectedOptions { get; private set; }
 
@@ -40,11 +43,15 @@ namespace effetopo.Views
             SetupUnits();
             PopulateFalloffCombos();
             PopulateSmoothAlgoCombo();
+            WireLivePreviewEvents();
 
-            ShapeDeltaMode.Checked += (_, __) => SetShapeElevationMode(true);
-            ShapeAbsoluteMode.Checked += (_, __) => SetShapeElevationMode(false);
+            ShapeDeltaMode.Checked += (_, __) => { SetShapeElevationMode(true); RaiseLiveOptionsChanged(); };
+            ShapeAbsoluteMode.Checked += (_, __) => { SetShapeElevationMode(false); RaiseLiveOptionsChanged(); };
             RotationSlider.ValueChanged += (_, e) =>
+            {
                 RotationValueText.Text = $"{e.NewValue:F0}°";
+                RaiseLiveOptionsChanged();
+            };
 
             if (initialSettings != null)
                 ApplySettings(initialSettings);
@@ -54,11 +61,68 @@ namespace effetopo.Views
             SelectTool(_selectedTool);
         }
 
+        /// <summary>Modeless show so Revit view stays interactive for hover preview.</summary>
+        public bool? ShowModelessAndWait()
+        {
+            var frame = new DispatcherFrame();
+            bool? result = null;
+            Closed += (_, __) =>
+            {
+                result = DialogResult;
+                frame.Continue = false;
+            };
+            Show();
+            Dispatcher.PushFrame(frame);
+            return result;
+        }
+
+        public bool TryGetLiveOptions(out ModifyTopoOptions options)
+        {
+            options = null;
+            try
+            {
+                var settings = BuildSettingsFromUi(validateStrict: false);
+                options = settings.ToOptions(_useMillimeters);
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         public void UpdatePointCounts(int originalCount, int currentCount)
         {
             OriginalPointsText.Text = originalCount.ToString(CultureInfo.InvariantCulture);
             ModifiedPointsText.Text = currentCount.ToString(CultureInfo.InvariantCulture);
         }
+
+        private void WireLivePreviewEvents()
+        {
+            void Hook(System.Windows.Controls.Control c)
+            {
+                if (c is TextBox tb)
+                    tb.TextChanged += (_, __) => RaiseLiveOptionsChanged();
+                else if (c is ComboBox cb)
+                    cb.SelectionChanged += (_, __) => RaiseLiveOptionsChanged();
+                else if (c is System.Windows.Controls.CheckBox chk)
+                {
+                    chk.Checked += (_, __) => RaiseLiveOptionsChanged();
+                    chk.Unchecked += (_, __) => RaiseLiveOptionsChanged();
+                }
+            }
+
+            Hook(CellSizeBox);
+            Hook(MeshDensityBox);
+            Hook(ShapeRadiusBox);
+            Hook(ShapeDeltaBox);
+            Hook(ShapeTargetBox);
+            Hook(ShowPreviewCheck);
+            Hook(ShapeFalloffCombo);
+            SmoothStrengthSlider.ValueChanged += (_, __) => RaiseLiveOptionsChanged();
+        }
+
+        private void RaiseLiveOptionsChanged() => LiveOptionsChanged?.Invoke(this, EventArgs.Empty);
 
         private void SetupUnits()
         {
@@ -92,6 +156,7 @@ namespace effetopo.Views
                 ShapeRadiusBox.Text = "32.81";
                 ShapeDeltaBox.Text = "3.28";
             }
+            ShowPreviewCheck.IsChecked = true;
             CurvatureThresholdBox.Text = "0.02";
             SmoothIterationsBox.Text = "3";
         }
@@ -188,6 +253,34 @@ namespace effetopo.Views
             MeshPanel.Visibility = tool == ModifyTopoTool.MeshControl ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
             ShapePanel.Visibility = tool == ModifyTopoTool.ShapeByPoint ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
             SmoothPanel.Visibility = tool == ModifyTopoTool.SmoothGeometry ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+
+            UpdateToolDependentControls(tool);
+            RaiseLiveOptionsChanged();
+        }
+
+        private void UpdateToolDependentControls(ModifyTopoTool tool)
+        {
+            bool meshTool = tool == ModifyTopoTool.MeshControl;
+            bool shapeTool = tool == ModifyTopoTool.ShapeByPoint;
+            bool gridSettingsUsed = meshTool || shapeTool;
+
+            PointGridSettingsBorder.IsEnabled = gridSettingsUsed;
+            PointGridSettingsPanel.IsEnabled = gridSettingsUsed;
+            CellSizeBox.IsEnabled = gridSettingsUsed;
+            RotationSlider.IsEnabled = gridSettingsUsed;
+
+            MeshDensityPanel.IsEnabled = meshTool;
+            MeshDensityBox.IsEnabled = meshTool;
+            ModifyBoundaryCheck.IsEnabled = meshTool;
+
+            bool previewTool = shapeTool || tool == ModifyTopoTool.InflateSurface;
+            ShowPreviewCheck.IsEnabled = previewTool;
+            if (!previewTool)
+                ShowPreviewCheck.IsChecked = false;
+
+            double inactiveOpacity = 0.45;
+            PointGridSettingsBorder.Opacity = gridSettingsUsed ? 1.0 : inactiveOpacity;
+            MeshDensityPanel.Opacity = meshTool ? 1.0 : inactiveOpacity;
         }
 
         private void Apply_Click(object sender, RoutedEventArgs e) => ConfirmAndClose(applyOnly: true);
@@ -198,14 +291,13 @@ namespace effetopo.Views
         {
             try
             {
-                var settings = BuildSettingsFromUi();
+                var settings = BuildSettingsFromUi(validateStrict: true);
                 SelectedOptions = settings.ToOptions(_useMillimeters);
                 ModifyTopoSettingsService.Instance.Save(settings);
                 IsApplyAction = applyOnly;
                 CloseAfterAction = !applyOnly;
                 DialogResult = true;
-                if (!applyOnly)
-                    Close();
+                Close();
             }
             catch (Exception ex)
             {
@@ -231,47 +323,53 @@ namespace effetopo.Views
                 "Redo", MessageBoxButton.OK, MessageBoxImage.Information);
         }
 
-        private ModifyTopoSettings BuildSettingsFromUi()
+        private ModifyTopoSettings BuildSettingsFromUi(bool validateStrict = true)
         {
             return new ModifyTopoSettings
             {
                 LastTool = _selectedTool,
-                CellSizeDisplay = ParseDouble(CellSizeBox.Text, "Cell Size"),
-                MeshDensityDisplay = ParseDouble(MeshDensityBox.Text, "Mesh Density"),
+                CellSizeDisplay = ParseDouble(CellSizeBox.Text, "Cell Size", validateStrict, allowZero: false),
+                MeshDensityDisplay = ParseDouble(MeshDensityBox.Text, "Mesh Density", validateStrict, allowZero: false),
                 RotationDegrees = RotationSlider.Value,
                 ModifyBoundary = ModifyBoundaryCheck.IsChecked == true,
                 ShowPreview = ShowPreviewCheck.IsChecked == true,
-                InflateRadiusDisplay = ParseDouble(InflateRadiusBox.Text, "Inflate Radius"),
-                InflateHeightDisplay = ParseDouble(InflateHeightBox.Text, "Inflate Height"),
+                InflateRadiusDisplay = ParseDouble(InflateRadiusBox.Text, "Inflate Radius", validateStrict),
+                InflateHeightDisplay = ParseDouble(InflateHeightBox.Text, "Inflate Height", validateStrict),
                 InflateFalloff = GetComboEnum<SculptFalloffType>(InflateFalloffCombo),
-                ShapeRadiusDisplay = ParseDouble(ShapeRadiusBox.Text, "Shape Radius"),
+                ShapeRadiusDisplay = ParseDouble(ShapeRadiusBox.Text, "Shape Radius", validateStrict),
                 ShapeUseDelta = ShapeDeltaMode.IsChecked == true,
-                ShapeDeltaDisplay = ParseDouble(ShapeDeltaBox.Text, "Delta elevation"),
-                ShapeTargetElevationDisplay = ParseDouble(ShapeTargetBox.Text, "Target elevation", allowZero: true),
+                ShapeDeltaDisplay = ParseDouble(ShapeDeltaBox.Text, "Delta elevation", validateStrict),
+                ShapeTargetElevationDisplay = ParseDouble(ShapeTargetBox.Text, "Target elevation", validateStrict, allowZero: true),
                 ShapeFalloff = GetComboEnum<SculptFalloffType>(ShapeFalloffCombo),
                 SmoothAlgorithm = GetComboEnum<SmoothAlgorithm>(SmoothAlgoCombo),
-                SmoothIterations = ParseInt(SmoothIterationsBox.Text, "Smooth iterations"),
+                SmoothIterations = ParseInt(SmoothIterationsBox.Text, "Smooth iterations", validateStrict),
                 SmoothStrength = SmoothStrengthSlider.Value,
-                CurvatureThreshold = ParseDouble(CurvatureThresholdBox.Text, "Curvature threshold", allowZero: true),
+                CurvatureThreshold = ParseDouble(CurvatureThresholdBox.Text, "Curvature threshold", validateStrict, allowZero: true),
                 RemeshEntireSurface = RemeshEntireCheck.IsChecked == true
             };
         }
 
-        private static double ParseDouble(string text, string fieldName, bool allowZero = false)
+        private double ParseDouble(string text, string fieldName, bool validateStrict, bool allowZero = false)
         {
             string raw = (text ?? string.Empty).Trim().Replace(",", ".");
             if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double value))
+            {
+                if (!validateStrict) return 0;
                 throw new InvalidOperationException($"Please enter a valid number for {fieldName}.");
-            if (!allowZero && value <= 0)
+            }
+            if (validateStrict && !allowZero && value <= 0)
                 throw new InvalidOperationException($"{fieldName} must be greater than zero.");
             return value;
         }
 
-        private static int ParseInt(string text, string fieldName)
+        private int ParseInt(string text, string fieldName, bool validateStrict)
         {
             string raw = (text ?? string.Empty).Trim();
             if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) || value < 1)
+            {
+                if (!validateStrict) return 1;
                 throw new InvalidOperationException($"{fieldName} must be a whole number ≥ 1.");
+            }
             return value;
         }
 

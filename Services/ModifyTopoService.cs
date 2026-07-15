@@ -92,7 +92,7 @@ namespace effetopo.Services
                 case ModifyTopoTool.ShapeByPoint:
                     if (centerPoint == null)
                         throw new InvalidOperationException("Pick a control point for Shape by Point.");
-                    ShapeByPoint(state, centerPoint, options);
+                    ShapeByPoint(doc, toposolid, editor, state, centerPoint, options);
                     break;
                 case ModifyTopoTool.SmoothGeometry:
                     SmoothGeometry(state, options);
@@ -241,9 +241,17 @@ namespace effetopo.Services
             }
         }
 
-        private static void ShapeByPoint(SculptState state, XYZ center, ModifyTopoOptions options)
+        private static void ShapeByPoint(
+            Document doc,
+            Toposolid toposolid,
+            SlabShapeEditor editor,
+            SculptState state,
+            XYZ center,
+            ModifyTopoOptions options)
         {
             double radius = Math.Max(options.ShapeRadiusFeet, 0.1);
+
+            AddShapeByPointGridPoints(doc, editor, state, center, options);
 
             SculptVertex centerVertex = FindNearestVertex(state.Vertices, center.X, center.Y);
             double centerOriginalZ = centerVertex?.Z ?? center.Z;
@@ -258,6 +266,44 @@ namespace effetopo.Services
 
                 double w = ComputeFalloff(dist / radius, options.ShapeFalloff);
                 v.Z = v.Z + (targetZ - centerOriginalZ) * w;
+            }
+        }
+
+        private static void AddShapeByPointGridPoints(
+            Document doc,
+            SlabShapeEditor editor,
+            SculptState state,
+            XYZ center,
+            ModifyTopoOptions options)
+        {
+            var snapshots = state.Vertices.Select(v => new SculptVertexSnapshot { X = v.X, Y = v.Y, Z = v.Z }).ToList();
+            var addPoints = ComputeShapeByPointAddPreviewPoints(center, options, snapshots);
+            const double xyTol = 0.15;
+
+            foreach (XYZ pt in addPoints)
+            {
+                bool exists = state.Vertices.Any(v =>
+                    HorizontalDistance(v.X, v.Y, pt.X, pt.Y) < xyTol);
+                if (exists) continue;
+
+                if (SlabShapeEditorHelper.TryAddPoint(editor, pt))
+                {
+                    state.PointsAdded++;
+                    state.Vertices.Add(new SculptVertex
+                    {
+                        RevitVertex = null,
+                        X = pt.X,
+                        Y = pt.Y,
+                        Z = pt.Z,
+                        OriginalZ = pt.Z
+                    });
+                }
+            }
+
+            if (state.PointsAdded > 0)
+            {
+                doc.Regenerate();
+                RefreshRevitVertices(editor, state);
             }
         }
 
@@ -412,9 +458,8 @@ namespace effetopo.Services
                     double? z = InterpolateZ(state.Vertices, rx, ry, denseSpacing * 2);
                     if (!z.HasValue) continue;
 
-                    try
+                    if (SlabShapeEditorHelper.TryAddPoint(editor, new XYZ(rx, ry, z.Value)))
                     {
-                        editor.AddPoint(new XYZ(rx, ry, z.Value));
                         state.PointsAdded++;
 
                         state.Vertices.Add(new SculptVertex
@@ -425,10 +470,6 @@ namespace effetopo.Services
                             Z = z.Value,
                             OriginalZ = z.Value
                         });
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Debug("MeshControl AddPoint failed at ({X},{Y}): {Error}", rx, ry, ex.Message);
                     }
                 }
             }
@@ -568,5 +609,97 @@ namespace effetopo.Services
             if (value > max) return max;
             return value;
         }
+
+        public sealed class SculptVertexSnapshot
+        {
+            public double X { get; set; }
+            public double Y { get; set; }
+            public double Z { get; set; }
+        }
+
+#if REVIT2024_OR_GREATER
+        public List<SculptVertexSnapshot> GetVertexSnapshots(Toposolid toposolid)
+        {
+            var editor = toposolid?.GetSlabShapeEditor();
+            if (editor == null) return new List<SculptVertexSnapshot>();
+            return CollectVertices(editor)
+                .Select(v => new SculptVertexSnapshot { X = v.X, Y = v.Y, Z = v.Z })
+                .ToList();
+        }
+
+        /// <summary>Grid points that would be added (no existing vertex within half cell).</summary>
+        public static List<XYZ> ComputeShapeByPointAddPreviewPoints(
+            XYZ center,
+            ModifyTopoOptions options,
+            IList<SculptVertexSnapshot> vertices)
+        {
+            var result = new List<XYZ>();
+            if (center == null || options == null || vertices == null || vertices.Count == 0)
+                return result;
+
+            double radius = Math.Max(options.ShapeRadiusFeet, 0.1);
+            double cell = Math.Max(options.CellSizeFeet, 0.25);
+            double angleRad = options.RotationDegrees * Math.PI / 180.0;
+            double cosA = Math.Cos(angleRad);
+            double sinA = Math.Sin(angleRad);
+            int cells = (int)Math.Ceiling(radius / cell) + 1;
+            const double existTol = 0.4;
+
+            for (int i = -cells; i <= cells; i++)
+            {
+                for (int j = -cells; j <= cells; j++)
+                {
+                    double lx = i * cell;
+                    double ly = j * cell;
+                    double gx = center.X + lx * cosA - ly * sinA;
+                    double gy = center.Y + lx * sinA + ly * cosA;
+
+                    if (HorizontalDistance(gx, gy, center.X, center.Y) > radius)
+                        continue;
+
+                    bool exists = vertices.Any(v =>
+                        HorizontalDistance(v.X, v.Y, gx, gy) < cell * existTol);
+                    if (exists)
+                        continue;
+
+                    double? z = InterpolateSurfaceZ(vertices, gx, gy, cell * 4);
+                    if (!z.HasValue) continue;
+
+                    result.Add(new XYZ(gx, gy, z.Value));
+                }
+            }
+
+            return result;
+        }
+
+        public static double? InterpolateSurfaceZ(
+            IList<SculptVertexSnapshot> vertices, double x, double y, double maxRadius)
+        {
+            if (vertices == null || vertices.Count == 0) return null;
+
+            double weightSum = 0;
+            double zSum = 0;
+            maxRadius = Math.Max(maxRadius, 0.5);
+            double bestDist = double.MaxValue;
+            double bestZ = vertices[0].Z;
+
+            foreach (SculptVertexSnapshot v in vertices)
+            {
+                double dist = HorizontalDistance(v.X, v.Y, x, y);
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    bestZ = v.Z;
+                }
+                if (dist > maxRadius) continue;
+                double w = dist < 0.01 ? 1e6 : 1.0 / (dist * dist);
+                weightSum += w;
+                zSum += v.Z * w;
+            }
+
+            if (weightSum < 1e-9) return bestZ;
+            return zSum / weightSum;
+        }
+#endif
     }
 }
