@@ -17,62 +17,68 @@ namespace effetopo.Services
         {
             public XYZ Center;
             public ModifyTopoOptions Options;
-            public List<XYZ> PreviewPoints = new List<XYZ>();
-            public int PointsAdded;
-            public int VerticesModified;
         }
 
         private readonly Document _doc;
         private readonly Toposolid _toposolid;
+        private readonly ModifyTopoGeometrySurfaceCache _displayTopology;
         private readonly List<ModifyTopoService.SculptVertexSnapshot> _baseVertices;
-        private List<ModifyTopoService.SculptVertexSnapshot> _workingVertices;
         private readonly List<StampRecord> _stamps = new List<StampRecord>();
+        private TerrainModifier.CalculateResult _lastCalculated;
 
-        public ModifyTopoDraftSession(Document doc, Toposolid toposolid)
+        public ModifyTopoDraftSession(
+            Document doc,
+            Toposolid toposolid,
+            ModifyTopoGeometrySurfaceCache displayTopology)
         {
             _doc = doc;
             _toposolid = toposolid;
+            _displayTopology = displayTopology;
             _baseVertices = ModifyTopoService.Instance.GetVertexSnapshots(toposolid);
-            _workingVertices = CloneVertices(_baseVertices);
+            Recalculate();
         }
 
         public int OriginalPointCount => _baseVertices.Count;
-        public int DraftPointCount => _workingVertices.Count;
+        public int DraftPointCount => _lastCalculated?.Vertices?.Count ?? _baseVertices.Count;
         public int StampCount => _stamps.Count;
         public bool HasPendingChanges => _stamps.Count > 0;
         public IReadOnlyList<StampRecord> Stamps => _stamps;
+        public TerrainModifier.CalculateResult LastCalculated => _lastCalculated;
 
         public ModifyTopoDraftStampResult StageStamp(XYZ center, ModifyTopoOptions options)
         {
             if (center == null || options == null)
                 throw new ArgumentNullException();
 
-            int pointsBefore = _workingVertices.Count;
-            var simulate = ModifyTopoService.SimulateShapeByPoint(
-                _doc, _toposolid, _workingVertices, center, options);
-            _workingVertices = simulate.Vertices;
-
-            var previewPoints = ModifyTopoService.ComputeShapeByPointStampPoints(
-                center, options, _workingVertices, _doc, _toposolid, null, previewWithGain: true);
-
-            var record = new StampRecord
+            int pointsBefore = DraftPointCount;
+            _stamps.Add(new StampRecord
             {
                 Center = center,
-                Options = CloneOptions(options),
-                PreviewPoints = previewPoints,
-                PointsAdded = simulate.PointsAdded,
-                VerticesModified = simulate.VerticesModified
-            };
-            _stamps.Add(record);
+                Options = CloneOptions(options)
+            });
+
+            Recalculate();
+            int pointsAdded = DraftPointCount - pointsBefore;
 
             return new ModifyTopoDraftStampResult
             {
                 StampIndex = _stamps.Count,
-                PointsAdded = simulate.PointsAdded,
-                VerticesModified = simulate.VerticesModified,
-                TotalDraftPoints = _workingVertices.Count,
-                PointsDeltaFromOriginal = _workingVertices.Count - _baseVertices.Count
+                PointsAdded = pointsAdded,
+                VerticesModified = _lastCalculated?.TotalVerticesModified ?? 0,
+                TotalDraftPoints = DraftPointCount,
+                PointsDeltaFromOriginal = DraftPointCount - OriginalPointCount
             };
+        }
+
+        public void UpdateLiveShapeOptions(ModifyTopoOptions liveOptions)
+        {
+            if (liveOptions == null || _stamps.Count == 0)
+                return;
+
+            foreach (StampRecord stamp in _stamps)
+                ApplyShapeOptions(stamp.Options, liveOptions);
+
+            Recalculate();
         }
 
         public bool TryUndoLastStamp()
@@ -81,19 +87,8 @@ namespace effetopo.Services
                 return false;
 
             _stamps.RemoveAt(_stamps.Count - 1);
-            RebuildWorkingFromBase();
+            Recalculate();
             return true;
-        }
-
-        public List<XYZ> GetAllPreviewPoints()
-        {
-            var all = new List<XYZ>();
-            foreach (StampRecord stamp in _stamps)
-            {
-                if (stamp.PreviewPoints == null) continue;
-                all.AddRange(stamp.PreviewPoints);
-            }
-            return all;
         }
 
         public StampRecord GetLastStamp() =>
@@ -103,7 +98,7 @@ namespace effetopo.Services
             _baseVertices;
 
         public IReadOnlyList<ModifyTopoService.SculptVertexSnapshot> GetWorkingVertices() =>
-            _workingVertices;
+            _lastCalculated?.Vertices ?? _baseVertices;
 
         public ModifyTopoResult Commit()
         {
@@ -117,50 +112,44 @@ namespace effetopo.Services
                 };
             }
 
-            ModifyTopoResult last = null;
+            Recalculate();
+            ModifyTopoResult last;
             using (Transaction tx = new Transaction(_doc, "Shape by Point (commit draft)"))
             {
                 tx.Start();
-                foreach (StampRecord stamp in _stamps)
-                {
-                    last = ModifyTopoService.Instance.Apply(
-                        _doc, _toposolid, stamp.Options, stamp.Center);
-                }
+                last = ModifyTopoService.Instance.ApplyCalculatedVertices(
+                    _doc, _toposolid, _baseVertices, _lastCalculated.Vertices);
                 tx.Commit();
             }
 
             Log.Information(
-                "Draft committed: {StampCount} stamps, {Total} points on Toposolid",
+                "Draft committed from preview mesh: {StampCount} stamps, {Total} points on Toposolid",
                 _stamps.Count, last?.PointsAfterModification ?? DraftPointCount);
 
             _stamps.Clear();
             _baseVertices.Clear();
             _baseVertices.AddRange(ModifyTopoService.Instance.GetVertexSnapshots(_toposolid));
-            _workingVertices = CloneVertices(_baseVertices);
+            Recalculate();
             return last;
         }
 
-        private void RebuildWorkingFromBase()
+        private void Recalculate()
         {
-            _workingVertices = CloneVertices(_baseVertices);
-            foreach (StampRecord stamp in _stamps)
-            {
-                var simulate = ModifyTopoService.SimulateShapeByPoint(
-                    _doc, _toposolid, _workingVertices, stamp.Center, stamp.Options);
-                _workingVertices = simulate.Vertices;
+            var stampDefs = _stamps
+                .Select(s => new TerrainModifier.StampDefinition { Center = s.Center, Options = s.Options })
+                .ToList();
 
-                stamp.PreviewPoints = ModifyTopoService.ComputeShapeByPointStampPoints(
-                    stamp.Center, stamp.Options, _workingVertices,
-                    _doc, _toposolid, null, previewWithGain: true);
-            }
+            _lastCalculated = TerrainModifier.Calculate(
+                _doc, _toposolid, _baseVertices, stampDefs, _displayTopology);
         }
 
-        private static List<ModifyTopoService.SculptVertexSnapshot> CloneVertices(
-            IList<ModifyTopoService.SculptVertexSnapshot> source)
+        private static void ApplyShapeOptions(ModifyTopoOptions target, ModifyTopoOptions live)
         {
-            return source?
-                .Select(v => new ModifyTopoService.SculptVertexSnapshot { X = v.X, Y = v.Y, Z = v.Z })
-                .ToList() ?? new List<ModifyTopoService.SculptVertexSnapshot>();
+            target.ShapeRadiusFeet = live.ShapeRadiusFeet;
+            target.ShapeDeltaFeet = live.ShapeDeltaFeet;
+            target.ShapeFalloff = live.ShapeFalloff;
+            target.ShapePointDensity = live.ShapePointDensity;
+            target.ShowPreview = live.ShowPreview;
         }
 
         private static ModifyTopoOptions CloneOptions(ModifyTopoOptions o) => new ModifyTopoOptions

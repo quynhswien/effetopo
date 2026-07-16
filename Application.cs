@@ -189,6 +189,10 @@ namespace effetopo
 
                 // Start recording session
                 StatisticsCollectorService.Instance.RecordSessionStart();
+
+#if REVIT2024_OR_GREATER
+                TerrainDirectContext3DPreview.Instance.EnsureRegistered();
+#endif
             }
             catch (Exception ex)
             {

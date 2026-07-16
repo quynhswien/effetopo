@@ -46,15 +46,6 @@ namespace effetopo.Services
 
             int solidBudget = MaxPreviewSolids;
 
-            if (stamps != null)
-            {
-                foreach (ModifyTopoDraftSession.StampRecord stamp in stamps)
-                {
-                    if (solidBudget <= 0) break;
-                    AddStampColumnPreview(geometry, stamp, result, ref solidBudget);
-                }
-            }
-
             foreach (ModifyTopoGeometrySurfaceCache.SurfaceTriangle tri in geometry.GetTrianglesInBounds(minX, minY, maxX, maxY))
             {
                 if (solidBudget <= 0) break;
@@ -85,38 +76,6 @@ namespace effetopo.Services
             }
 
             return result;
-        }
-
-        private static void AddStampColumnPreview(
-            ModifyTopoGeometrySurfaceCache geometry,
-            ModifyTopoDraftSession.StampRecord stamp,
-            DraftPreviewGeometry result,
-            ref int solidBudget)
-        {
-            if (stamp?.PreviewPoints == null || stamp.PreviewPoints.Count == 0)
-                return;
-
-            foreach (XYZ pt in stamp.PreviewPoints)
-            {
-                if (solidBudget <= 0) break;
-
-                double? baseZ = geometry.TryGetSurfaceZ(pt.X, pt.Y);
-                double bottomZ = baseZ ?? pt.Z;
-                double topZ = pt.Z;
-                if (Math.Abs(topZ - bottomZ) < ZDeltaThreshold)
-                    continue;
-
-                Solid column = TryExtrudeColumn(pt.X, pt.Y, bottomZ, topZ, StampColumnRadius);
-                if (column == null) continue;
-
-                result.DeltaVolumes.Add(column);
-
-                Solid cap = TryExtrudeColumn(pt.X, pt.Y, topZ - 0.25, topZ, StampColumnRadius * 1.05);
-                if (cap != null)
-                    result.DraftSurface.Add(cap);
-
-                solidBudget--;
-            }
         }
 
         public static void GetBoundsFromStamps(

@@ -1,4 +1,6 @@
 using System;
+using System.Linq;
+using System.Windows.Interop;
 using System.Windows.Threading;
 using Autodesk.Revit.DB;
 using Autodesk.Revit.UI;
@@ -10,7 +12,7 @@ namespace effetopo.Services
 {
 #if REVIT2024_OR_GREATER
     /// <summary>
-    /// Shape-by-Point: stage stamps in draft memory + DirectShape preview; commit on Ok.
+    /// Shape-by-Point: TerrainModifier.Calculate() → preview render; commit on Ok.
     /// </summary>
     internal sealed class ModifyTopoPreviewCoordinator : IDisposable
     {
@@ -19,9 +21,10 @@ namespace effetopo.Services
         private readonly Toposolid _toposolid;
         private readonly ModifyTopoDialog _dialog;
         private readonly ModifyTopoSubElementSession _subElementSession;
-        private readonly ModifyTopoDraftSession _draftSession;
-        private readonly ModifyTopoPreviewSurface _previewSurface;
         private readonly ModifyTopoGeometrySurfaceCache _geometryCache;
+        private readonly ModifyTopoDraftSession _draftSession;
+        private readonly TerrainDirectContext3DPreview _dc3dPreview;
+        private readonly TerrainMeshDirectShapePreview _directShapePreview;
         private readonly DispatcherTimer _timer;
 
         private string _lastStatus = string.Empty;
@@ -35,9 +38,12 @@ namespace effetopo.Services
             _toposolid = toposolid;
             _dialog = dialog;
             _subElementSession = new ModifyTopoSubElementSession(_doc, _uidoc, toposolid);
-            _draftSession = new ModifyTopoDraftSession(_doc, toposolid);
-            _previewSurface = new ModifyTopoPreviewSurface(_doc);
             _geometryCache = new ModifyTopoGeometrySurfaceCache(toposolid);
+            _draftSession = new ModifyTopoDraftSession(_doc, toposolid, _geometryCache);
+            _dc3dPreview = TerrainDirectContext3DPreview.Instance;
+            _dc3dPreview.BindSession(_doc, _uidoc);
+            _dc3dPreview.EnsureRegistered();
+            _directShapePreview = new TerrainMeshDirectShapePreview(_doc);
 
             _timer = new DispatcherTimer(DispatcherPriority.Background, dialog.Dispatcher)
             {
@@ -53,7 +59,7 @@ namespace effetopo.Services
             if (_draftSession == null || !_draftSession.HasPendingChanges)
                 return null;
 
-            _previewSurface.Clear();
+            ClearPreview();
             ModifyTopoResult result = _draftSession.Commit();
             try { _uidoc.RefreshActiveView(); } catch { }
             return result;
@@ -66,7 +72,7 @@ namespace effetopo.Services
             _dialog.LiveOptionsChanged += OnLiveOptionsChanged;
             _timer.Start();
             UpdateDraftUi();
-            Log.Debug("ModifyTopo coordinator started (draft preview mode).");
+            Log.Information("ModifyTopo coordinator started (TerrainModifier preview).");
         }
 
         public void Dispose()
@@ -79,12 +85,25 @@ namespace effetopo.Services
                 _dialog.RequestUndoDraftStamp -= OnRequestUndoDraft;
                 _dialog.LiveOptionsChanged -= OnLiveOptionsChanged;
             }
-            _previewSurface.Clear();
+            ClearPreview();
             _subElementSession.Dispose();
             try { _uidoc.RefreshActiveView(); } catch { }
         }
 
-        private void OnLiveOptionsChanged(object sender, EventArgs e) => RefreshDraftPreview();
+        private void ClearPreview()
+        {
+            _dc3dPreview.SetVisible(false);
+            _dc3dPreview.SetMesh(null);
+            View view = _doc.ActiveView;
+            _directShapePreview.Clear(view);
+        }
+
+        private void OnLiveOptionsChanged(object sender, EventArgs e)
+        {
+            if (_dialog.TryGetLiveOptions(out ModifyTopoOptions options))
+                _draftSession.UpdateLiveShapeOptions(options);
+            RefreshDraftPreview();
+        }
 
         private void OnTimerTick(object sender, EventArgs e)
         {
@@ -92,8 +111,17 @@ namespace effetopo.Services
                 return;
 
             if (!_dialog.TryGetLiveOptions(out ModifyTopoOptions options) ||
-                options.Tool != ModifyTopoTool.ShapeByPoint)
+                options.Tool != ModifyTopoTool.ShapeByPoint ||
+                !options.ShowPreview)
                 return;
+
+            IntPtr dialogHwnd = new WindowInteropHelper(_dialog).Handle;
+            if (!ModifyTopoViewPickHelper.TryGetHitOnToposolid(
+                    _uidoc, _toposolid, _geometryCache, dialogHwnd,
+                    out XYZ hoverCenter, out _))
+                return;
+
+            RefreshPreviewWithHover(hoverCenter, options);
         }
 
         private void OnRequestUndoDraft(object sender, EventArgs e)
@@ -165,22 +193,53 @@ namespace effetopo.Services
                 !_draftSession.HasPendingChanges)
             {
                 if (!_draftSession.HasPendingChanges)
-                    _previewSurface.Clear();
+                    ClearPreview();
+                return;
+            }
+
+            ShowCalculatedMesh(_draftSession.LastCalculated);
+        }
+
+        private void RefreshPreviewWithHover(XYZ hoverCenter, ModifyTopoOptions options)
+        {
+            var stampDefs = _draftSession.Stamps
+                .Select(s => new TerrainModifier.StampDefinition { Center = s.Center, Options = s.Options })
+                .ToList();
+
+            if (hoverCenter != null)
+            {
+                stampDefs.Add(new TerrainModifier.StampDefinition
+                {
+                    Center = hoverCenter,
+                    Options = options
+                });
+            }
+
+            TerrainModifier.CalculateResult calculated = TerrainModifier.Calculate(
+                _doc, _toposolid, _draftSession.GetBaseVertices(), stampDefs, _geometryCache);
+
+            ShowCalculatedMesh(calculated);
+        }
+
+        private void ShowCalculatedMesh(TerrainModifier.CalculateResult calculated)
+        {
+            if (calculated?.Mesh == null)
+                return;
+
+            TerrainMesh mesh = calculated.Mesh;
+            bool hasGeometry = mesh.TriangleIndices.Count >= 3 || mesh.LineSegments.Count >= 2;
+            if (!hasGeometry)
+            {
+                Log.Warning(
+                    "Preview mesh empty after Calculate (stamps={StampCount}, verts={VertCount})",
+                    _draftSession.StampCount, calculated.Vertices?.Count ?? 0);
                 return;
             }
 
             View view = _doc.ActiveView;
-            if (view == null) return;
-
-            _previewSurface.UpdateDraftPreview(
-                view,
-                _toposolid.Id,
-                _geometryCache,
-                _draftSession.GetBaseVertices(),
-                _draftSession.GetWorkingVertices(),
-                _draftSession.Stamps,
-                _draftSession.StampCount);
-
+            _dc3dPreview.SetMesh(mesh);
+            _dc3dPreview.SetVisible(true);
+            _directShapePreview.Update(view, _toposolid.Id, mesh);
             try { _uidoc.RefreshActiveView(); } catch { }
         }
 
