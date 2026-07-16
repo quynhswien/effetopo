@@ -223,23 +223,38 @@ namespace effetopo.Services
 
         private void ShowCalculatedMesh(TerrainModifier.CalculateResult calculated)
         {
-            if (calculated?.Mesh == null)
+            if (calculated == null)
                 return;
 
-            TerrainMesh mesh = calculated.Mesh;
-            bool hasGeometry = mesh.TriangleIndices.Count >= 3 || mesh.LineSegments.Count >= 2;
-            if (!hasGeometry)
+            bool hasSolids = calculated.PreviewSolids != null && calculated.PreviewSolids.Count > 0;
+            bool hasBrush = calculated.Mesh?.LineSegments.Count >= 2;
+
+            if (!hasSolids && !hasBrush)
             {
                 Log.Warning(
-                    "Preview mesh empty after Calculate (stamps={StampCount}, verts={VertCount})",
+                    "Preview empty after Calculate (stamps={StampCount}, verts={VertCount})",
                     _draftSession.StampCount, calculated.Vertices?.Count ?? 0);
                 return;
             }
 
             View view = _doc.ActiveView;
-            _dc3dPreview.SetMesh(mesh);
-            _dc3dPreview.SetVisible(true);
-            _directShapePreview.Update(view, _toposolid.Id, mesh);
+
+            if (hasBrush)
+            {
+                _dc3dPreview.SetMesh(calculated.Mesh);
+                _dc3dPreview.SetVisible(true);
+            }
+            else
+            {
+                _dc3dPreview.SetMesh(null);
+                _dc3dPreview.SetVisible(false);
+            }
+
+            if (hasSolids)
+                _directShapePreview.UpdateFromRevitSolids(view, _toposolid.Id, calculated.PreviewSolids, calculated.Mesh);
+            else
+                _directShapePreview.Update(view, _toposolid.Id, calculated.Mesh);
+
             try { _uidoc.RefreshActiveView(); } catch { }
         }
 

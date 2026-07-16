@@ -27,6 +27,52 @@ namespace effetopo.Services
             _doc = doc;
         }
 
+        public void UpdateFromRevitSolids(
+            View view,
+            ElementId toposolidId,
+            IList<GeometryObject> revitSolids,
+            TerrainMesh brushOverlay = null)
+        {
+            if (_doc == null || view == null || revitSolids == null || revitSolids.Count == 0)
+                return;
+
+            string key = string.Format(CultureInfo.InvariantCulture,
+                "revit:{0}:{1}", revitSolids.Count, ComputeSolidFingerprint(revitSolids));
+            if (key == _lastKey && _shapeId != ElementId.InvalidElementId && _doc.GetElement(_shapeId) != null)
+                return;
+            _lastKey = key;
+
+            var shapes = new List<GeometryObject>(revitSolids);
+            int budget = MaxSolids - shapes.Count;
+            if (brushOverlay != null && budget > 0)
+                AddBrushRingColumns(brushOverlay, shapes, ref budget);
+
+            using (Transaction tx = new Transaction(_doc, "Update Terrain Preview"))
+            {
+                tx.Start();
+                try
+                {
+                    ClearShapeOnly();
+                    var ds = DirectShape.CreateElement(_doc, new ElementId(BuiltInCategory.OST_GenericModel));
+                    ds.SetShape(shapes);
+                    ds.Name = ShapeName;
+                    _shapeId = ds.Id;
+                    ApplyStyle(view, _shapeId, new Color(255, 190, 0), transparency: 15);
+                    ApplyTopoDimming(view, toposolidId, dim: true);
+                    _lastViewId = view.Id;
+                    _doc.Regenerate();
+                    tx.Commit();
+                    Log.Information("DirectShape Revit-exact preview: {SolidCount} geometry object(s)",
+                        shapes.Count);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning("DirectShape Revit-exact preview failed: {Error}", ex.Message);
+                    if (tx.HasStarted() && !tx.HasEnded()) tx.RollBack();
+                }
+            }
+        }
+
         public void Update(View view, ElementId toposolidId, TerrainMesh mesh)
         {
             if (_doc == null || view == null || mesh == null)
@@ -112,6 +158,17 @@ namespace effetopo.Services
             }
             catch { }
             _shapeId = ElementId.InvalidElementId;
+        }
+
+        private static string ComputeSolidFingerprint(IList<GeometryObject> solids)
+        {
+            double sum = 0;
+            foreach (GeometryObject obj in solids)
+            {
+                if (obj is Solid solid)
+                    sum += solid.Volume + solid.SurfaceArea;
+            }
+            return sum.ToString("F4", CultureInfo.InvariantCulture);
         }
 
         private static List<GeometryObject> BuildShapes(TerrainMesh mesh, int triCount)

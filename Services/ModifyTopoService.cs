@@ -155,7 +155,8 @@ namespace effetopo.Services
             Document doc,
             Toposolid toposolid,
             IList<SculptVertexSnapshot> baseVertices,
-            IList<SculptVertexSnapshot> targetVertices)
+            IList<SculptVertexSnapshot> targetVertices,
+            bool logResult = true)
         {
             if (doc == null || toposolid == null || baseVertices == null || targetVertices == null)
                 throw new ArgumentNullException();
@@ -244,7 +245,8 @@ namespace effetopo.Services
                     modified, pointsAdded, 0, afterCount)
             };
             LastResult = result;
-            Log.Information("ModifyTopo (from preview mesh): {Summary}", result.Summary);
+            if (logResult)
+                Log.Information("ModifyTopo (from preview mesh): {Summary}", result.Summary);
             return result;
         }
 #endif

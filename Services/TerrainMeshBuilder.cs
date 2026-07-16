@@ -23,6 +23,16 @@ namespace effetopo.Services
         private const double ZDeltaThreshold = 0.005;
         private const double BoundsMargin = 2.0;
 
+        public static TerrainMesh BuildBrushOverlay(
+            IReadOnlyList<ModifyTopoService.SculptVertexSnapshot> workingVertices,
+            IReadOnlyList<TerrainModifier.StampDefinition> stamps)
+        {
+            var mesh = new TerrainMesh();
+            AddBrushRings(mesh, workingVertices, stamps);
+            mesh.Bounds = ComputeBounds(mesh);
+            return mesh;
+        }
+
         public static TerrainMesh Build(
             ModifyTopoGeometrySurfaceCache displayTopology,
             IReadOnlyList<ModifyTopoService.SculptVertexSnapshot> baseVertices,

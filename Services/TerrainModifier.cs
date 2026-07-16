@@ -23,6 +23,7 @@ namespace effetopo.Services
         {
             public List<ModifyTopoService.SculptVertexSnapshot> Vertices = new();
             public TerrainMesh Mesh = new();
+            public IList<GeometryObject> PreviewSolids = Array.Empty<GeometryObject>();
             public int TotalPointsAdded;
             public int TotalVerticesModified;
         }
@@ -59,10 +60,14 @@ namespace effetopo.Services
                 }
             }
 
+            IList<GeometryObject> previewSolids = ToposolidPreviewGeometrySampler.SampleExactSolid(
+                doc, toposolid, baseVertices.ToList(), working);
+
             return new CalculateResult
             {
                 Vertices = working,
-                Mesh = TerrainMeshBuilder.Build(displayTopology, baseVertices, working, stamps),
+                Mesh = TerrainMeshBuilder.BuildBrushOverlay(workingVertices: working, stamps),
+                PreviewSolids = previewSolids,
                 TotalPointsAdded = totalAdded,
                 TotalVerticesModified = totalModified
             };

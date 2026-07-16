@@ -11,7 +11,7 @@ using System;
 using System.Reflection;
 
 [assembly: System.Reflection.AssemblyCompanyAttribute("effetopo")]
-[assembly: System.Reflection.AssemblyConfigurationAttribute("Debug R24")]
+[assembly: System.Reflection.AssemblyConfigurationAttribute("Release R24")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
 [assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+88e1691a700935bb0850d0dbcb3ec563f785091f")]
 [assembly: System.Reflection.AssemblyProductAttribute("effetopo")]
