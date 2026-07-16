@@ -36,6 +36,20 @@
     <PropertyGroup Condition="$(TargetFramework.StartsWith('net8')) Or $(TargetFramework.StartsWith('netcore')) Or $(TargetFramework.StartsWith('netstandard')) Or $(TargetFramework.StartsWith('net9'))">
         <DefineConstants>$(DefineConstants);NETCORE</DefineConstants>
     </PropertyGroup>
+    <PropertyGroup Condition="$(Configuration.Contains('R24'))">
+        <RevitAddinsDeployDir>$(APPDATA)\Autodesk\Revit\Addins\2024\effetopo</RevitAddinsDeployDir>
+    </PropertyGroup>
+    <Target Name="DeployToRevitAddins" AfterTargets="Build" Condition="'$(Configuration)' == 'Debug R24'">
+        <MakeDir Directories="$(RevitAddinsDeployDir)" />
+        <Copy SourceFiles="$(TargetPath)"
+              DestinationFolder="$(RevitAddinsDeployDir)"
+              SkipUnchangedFiles="true"
+              ContinueOnError="true">
+            <Output TaskParameter="CopiedFiles" ItemName="DeployedAddinFiles" />
+        </Copy>
+        <Message Importance="high" Text="Deployed add-in to $(RevitAddinsDeployDir) (restart Revit if DLL was locked)." Condition="'@(DeployedAddinFiles)' != ''" />
+        <Warning Text="Could not deploy effetopo.dll — close Revit and rebuild to copy to $(RevitAddinsDeployDir)." Condition="'@(DeployedAddinFiles)' == ''" />
+    </Target>
     <ItemGroup>
         <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
         <PackageReference Include="Nice3point.Revit.Build.Tasks" Version="1.0.0" />

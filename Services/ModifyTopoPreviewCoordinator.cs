@@ -146,35 +146,70 @@ namespace effetopo.Services
                 return;
 
             _pickInProgress = true;
+            _timer.Stop();
+            int stampsThisSession = 0;
             try
             {
                 _dialog.Hide();
 
-                XYZ pick = _uidoc.Selection.PickPoint(
-                    ObjectSnapTypes.Nearest | ObjectSnapTypes.Intersections,
-                    "Chọn điểm trên Toposolid để preview stamp (Ok để áp dụng thật)");
+                while (true)
+                {
+                    if (!_dialog.TryGetLiveOptions(out options))
+                        break;
 
-                ModifyTopoDraftStampResult staged = _draftSession.StageStamp(pick, options);
-                UpdateDraftUi();
-                RefreshDraftPreview();
+                    try
+                    {
+                        string prompt = stampsThisSession == 0
+                            ? "Chọn các điểm trên Toposolid để thêm stamp. Nhấn Esc khi xong."
+                            : $"Đã thêm {stampsThisSession} stamp — chọn tiếp hoặc Esc để quay lại hộp thoại.";
 
-                SetStatus(
-                    $"Draft #{staged.StampIndex}: +{staged.PointsAdded} điểm, " +
-                    $"{staged.VerticesModified} đỉnh — tổng preview {_draftSession.DraftPointCount} điểm. Bấm Ok để commit.");
-            }
-            catch (Autodesk.Revit.Exceptions.OperationCanceledException)
-            {
-                SetStatus("Đã hủy pick — thử lại.");
+                        XYZ pick = _uidoc.Selection.PickPoint(
+                            ObjectSnapTypes.Nearest | ObjectSnapTypes.Intersections,
+                            prompt);
+
+                        ModifyTopoDraftStampResult staged = _draftSession.StageStamp(pick, options);
+                        stampsThisSession++;
+                        UpdateDraftUi();
+                        RefreshDraftPreview();
+
+                        Log.Information(
+                            "Multi-pick stamp #{Index}: +{Added} pts, {Modified} verts",
+                            staged.StampIndex, staged.PointsAdded, staged.VerticesModified);
+                    }
+                    catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+                    {
+                        break;
+                    }
+                }
+
+                if (stampsThisSession > 0)
+                {
+                    SetStatus(
+                        $"Đã thêm {stampsThisSession} stamp (tổng {_draftSession.StampCount}). " +
+                        "Ok để ghi vào Toposolid, Pick tiếp, hoặc Cancel.");
+                }
+                else if (_draftSession.StampCount > 0)
+                {
+                    SetStatus(
+                        $"Thoát chế độ pick — {_draftSession.StampCount} stamp trong draft. " +
+                        "Ok / Pick tiếp / Cancel.");
+                }
+                else
+                {
+                    SetStatus("Thoát chế độ pick — chưa có stamp. Bấm Pick hoặc hover để preview.");
+                }
             }
             catch (Exception ex)
             {
-                Log.Warning(ex, "Pick and preview stamp failed");
+                Log.Warning(ex, "Multi pick session failed");
                 SetStatus($"Lỗi: {ex.Message}");
             }
             finally
             {
                 _dialog.Show();
+                _dialog.Activate();
                 _pickInProgress = false;
+                _timer.Start();
                 try { _uidoc.RefreshActiveView(); } catch { }
             }
         }

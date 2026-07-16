@@ -303,7 +303,7 @@ namespace effetopo.Views
             if (shapeTool)
             {
                 ShowPreviewCheck.IsChecked = true;
-                SetPreviewStatus("Bấm «Pick & Preview Stamp» để thêm stamp vào draft. Ok mới ghi vào topo.");
+                SetPreviewStatus("Bấm «Pick & Preview Stamp» — chọn nhiều điểm, Esc để quay lại. Ok mới ghi vào topo.");
                 SetDraftStampCount(0);
             }
 

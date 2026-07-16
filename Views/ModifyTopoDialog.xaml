@@ -163,7 +163,7 @@
                                     <ComboBox x:Name="ShapeFalloffCombo" Grid.Row="3" Grid.Column="1" Height="28" Margin="0,4"/>
                                 </Grid>
                                 <TextBlock Margin="0,10,0,0" Foreground="#777" TextWrapping="Wrap"
-                                           Text="Bấm «Pick &amp; Preview Stamp» để thêm stamp vào draft (cam/orange trên topo). Có thể lặp nhiều lần. Bấm Ok để ghi thật vào Toposolid; Cancel bỏ hết draft."/>
+                                           Text="Bấm «Pick &amp; Preview Stamp» để vào chế độ chọn điểm: click nhiều lần trên topo, nhấn Esc để quay lại hộp thoại. Ok ghi thật vào Toposolid; Cancel bỏ draft."/>
                             </StackPanel>
 
                             <!-- Smooth Geometry -->
