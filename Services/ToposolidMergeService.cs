@@ -332,86 +332,6 @@ namespace effetopo.Services
             }
         }
 
-        /// <summary>
-        /// Aligns mesh triangle Z to Toposolid SlabShapeVertex.Position.Z (model coordinates).
-        /// Mesh from get_Geometry can be offset from the real surface when survey/project datum differs.
-        /// </summary>
-        private static double AlignMeshZToSlabVertices(
-            Document doc,
-#if REVIT2024_OR_GREATER
-            Toposolid toposolid,
-#else
-            Element toposolid,
-#endif
-            List<TriangleData> triangles)
-        {
-            if (toposolid == null || triangles == null || triangles.Count == 0)
-                return 0;
-
-            var meshZs = new List<double>(triangles.Count);
-            foreach (var tri in triangles)
-                meshZs.Add((tri.V0.Z + tri.V1.Z + tri.V2.Z) / 3.0);
-            double meshMedian = GetMedian(meshZs);
-
-            var slabZs = new List<double>();
-            try
-            {
-                SlabShapeEditor editor = toposolid.GetSlabShapeEditor();
-                if (editor?.SlabShapeVertices != null)
-                {
-                    foreach (SlabShapeVertex vertex in editor.SlabShapeVertices)
-                    {
-                        if (vertex?.Position != null)
-                            slabZs.Add(vertex.Position.Z);
-                    }
-                }
-            }
-            catch { }
-
-            if (slabZs.Count > 0)
-            {
-                double slabMedian = GetMedian(slabZs);
-                double diff = slabMedian - meshMedian;
-                if (Math.Abs(diff) > 0.5)
-                    return diff;
-            }
-
-            // Mesh Z is often offset from topo host level – shift to model coordinates (same as floor/topo in Revit).
-            Level topoLevel = doc?.GetElement(toposolid.LevelId) as Level;
-            double topoLevelElev = topoLevel?.Elevation ?? 0;
-            if (Math.Abs(topoLevelElev) > 0.5 && meshMedian < topoLevelElev - 0.5)
-                return topoLevelElev;
-
-            return 0;
-        }
-
-        private static double GetMedian(List<double> values)
-        {
-            if (values == null || values.Count == 0) return 0;
-            values.Sort();
-            int mid = values.Count / 2;
-            return values.Count % 2 == 0
-                ? (values[mid - 1] + values[mid]) * 0.5
-                : values[mid];
-        }
-
-        private static void ApplyZCorrectionToTriangles(List<TriangleData> triangles, double correction)
-        {
-            if (triangles == null || Math.Abs(correction) < 1e-9) return;
-
-            foreach (var tri in triangles)
-            {
-                tri.V0 = OffsetZ(tri.V0, correction);
-                tri.V1 = OffsetZ(tri.V1, correction);
-                tri.V2 = OffsetZ(tri.V2, correction);
-            }
-        }
-
-        private static XYZ OffsetZ(XYZ point, double deltaZ)
-        {
-            return new XYZ(point.X, point.Y, point.Z + deltaZ);
-        }
-
         private static View3D GetRaycastView3D(Document doc)
         {
             if (doc == null) return null;
@@ -479,8 +399,8 @@ namespace effetopo.Services
         }
 
         /// <summary>
-        /// Reads topo top-surface elevation in survey coordinates (matches Revit Modify Sub Elements, Elevation Base = Survey Point).
-        /// Uses SlabShape-aligned triangle mesh – not raw ReferenceIntersector (returns local Z ~2' instead of survey ~441').
+        /// Reads topo top-surface elevation in survey coordinates (Elevation Base = Survey Point).
+        /// Raycasts down onto the visible Toposolid geometry mesh; no SlabShape Z offset applied.
         /// </summary>
         private sealed class TopoSurfaceElevationProvider
         {
@@ -489,32 +409,19 @@ namespace effetopo.Services
             private readonly SurveyCoordinateHelper _surveyCoords;
 
             public TopoSurfaceElevationProvider(
-                Document doc,
-#if REVIT2024_OR_GREATER
-                Toposolid toposolid,
-#else
-                Element toposolid,
-#endif
                 List<TriangleData> triangles,
                 double rayOriginZ,
                 SurveyCoordinateHelper surveyCoords)
             {
                 _rayOriginZ = rayOriginZ;
                 _surveyCoords = surveyCoords;
-
-                double meshZOffset = AlignMeshZToSlabVertices(doc, toposolid, triangles);
-                if (Math.Abs(meshZOffset) > 0.01)
-                {
-                    ApplyZCorrectionToTriangles(triangles, meshZOffset);
-                    Log.Information(
-                        $"Aligned topo mesh to SlabShape vertices by {meshZOffset:F4} ft for survey-coordinate sampling");
-                }
-
                 _spatialGrid = new SpatialGrid(triangles, cellSize: 10.0);
-                Log.Information("Topo elevation: survey coordinates via aligned mesh + ProjectLocation transform");
+                Log.Information(
+                    "Topo elevation: raycast on geometry mesh ({TriangleCount} triangles) + Survey Point transform",
+                    triangles?.Count ?? 0);
             }
 
-            /// <summary>Returns topo surface elevation in survey/shared coordinates (e.g. 441' not 2').</summary>
+            /// <summary>Returns top mesh surface elevation in survey/shared coordinates at (x,y).</summary>
             public double? GetTopSurfaceSurveyElevation(double x, double y, ToposolidMergeService owner)
             {
                 double? modelZ = owner.GetElevationAtPointOptimized(
@@ -1872,8 +1779,8 @@ namespace effetopo.Services
         }
 
         /// <summary>
-        /// Makes a Floor follow a Toposolid surface: updates EVERY SlabShape vertex (including all boundary) to topo elevation.
-        /// Logic: (1) Use only SlabShapeEditor.SlabShapeVertices so no vertex is missed. (2) Project each vertex onto toposolid and set Z. (3) Add toposolid points within floor boundary. (4) Apply via SlabShapeEditor.
+        /// Makes a Floor follow a Toposolid surface: raycast floor/topo XY onto topo geometry mesh,
+        /// convert hit Z to Survey Point elevation, and apply as floor slab shape offset.
         /// </summary>
         public Floor FloorFollowToposolid(Document doc, Floor floor, 
 #if REVIT2024_OR_GREATER
@@ -2026,7 +1933,7 @@ namespace effetopo.Services
             }
 
             var topoElevationProvider = new TopoSurfaceElevationProvider(
-                doc, toposolid, topoTriangles, floorDatumZ, surveyCoords);
+                topoTriangles, floorDatumZ, surveyCoords);
 
             if (sketchCorners.Count > 0 && sketchCorners[0] != null)
             {
@@ -2137,7 +2044,7 @@ namespace effetopo.Services
                 catch { }
             }
             
-            // Toposolid interior points (optional): at each XY keep only highest Z (top surface)
+            // Toposolid interior points (optional): project each XY onto topo mesh top surface (survey elevation)
             var topoPointsToAddByXY = new Dictionary<string, PointUpdate>();
             if (addInteriorTopoPoints)
             {
@@ -2153,17 +2060,21 @@ namespace effetopo.Services
                             topoPoint.Y <= floorMaxY + boundaryTolerance)
                         {
                             string xyKey = GetXYKey(topoPoint, xyTolerance);
-
                             if (floorXYMap.ContainsKey(xyKey))
                                 continue;
+
+                            double? topoSurveyZ = topoElevationProvider.GetTopSurfaceSurveyElevation(
+                                topoPoint.X, topoPoint.Y, this);
+                            if (!topoSurveyZ.HasValue) continue;
 
                             var update = new PointUpdate
                             {
                                 OriginalPoint = topoPoint,
-                                NewZ = topoPoint.Z,
+                                NewZ = topoSurveyZ.Value,
                                 IsNewPoint = true
                             };
-                            if (!topoPointsToAddByXY.TryGetValue(xyKey, out PointUpdate existing) || topoPoint.Z > existing.NewZ)
+                            if (!topoPointsToAddByXY.TryGetValue(xyKey, out PointUpdate existing)
+                                || topoSurveyZ.Value > existing.NewZ)
                                 topoPointsToAddByXY[xyKey] = update;
                         }
                     }
@@ -2188,28 +2099,9 @@ namespace effetopo.Services
                     topoPointsToAddByXY[key] = new PointUpdate { OriginalPoint = pt, NewZ = topoSurveyZ.Value, IsNewPoint = true };
             }
             
-            // Project each topo point onto toposolid surface for Z (avoid "flying" points - vertex Z can be wrong)
             int topoPointsSkippedNoProjection = 0;
             foreach (var kv in topoPointsToAddByXY)
-            {
-                var pu = kv.Value;
-                double? projectedSurveyZ = topoElevationProvider.GetTopSurfaceSurveyElevation(
-                    pu.OriginalPoint.X, pu.OriginalPoint.Y, this);
-                if (projectedSurveyZ.HasValue)
-                {
-                    pointsToAddOrUpdate.Add(new PointUpdate 
-                    { 
-                        OriginalPoint = pu.OriginalPoint, 
-                        NewZ = projectedSurveyZ.Value,
-                        IsNewPoint = true
-                    });
-                }
-                else
-                {
-                    topoPointsSkippedNoProjection++;
-                    Log.Debug("Skipping topo point at ({X}, {Y}) - no intersection with topo surface", pu.OriginalPoint.X, pu.OriginalPoint.Y);
-                }
-            }
+                pointsToAddOrUpdate.Add(kv.Value);
             
             int topoPointsToAdd = pointsToAddOrUpdate.Count(p => p.IsNewPoint);
             if (addInteriorTopoPoints)
