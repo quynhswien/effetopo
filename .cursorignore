@@ -1,0 +1,7 @@
+﻿.vs
+.vscode
+.git
+.gitignore
+obj/
+bin/
+*.log
