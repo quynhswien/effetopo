@@ -10,7 +10,6 @@ using effetopo.Commands;
 using effetopo.Models;
 using effetopo.Services;
 using effetopo.Views;
-using Nice3point.Revit.Extensions;
 
 namespace effetopo
 {
@@ -218,6 +217,8 @@ namespace effetopo
             LoggingService.Shutdown();
         }
 
+        private static string RibbonPanelName => APP_NAME;
+
         /// <summary>
         /// Creates the ribbon interface for the add-in
         /// </summary>
@@ -225,10 +226,7 @@ namespace effetopo
         {
             try
             {
-                // Create panel in Revit ribbon
-                var panel = UIControlledApplication.CreatePanel("Commands", BASE_NAME);
-
-                // Add commands to panel
+                var panel = ObtainCommandsRibbonPanel();
                 AddCommandsToPanel(panel);
 
                 Log.Debug("Ribbon UI created successfully");
@@ -237,6 +235,74 @@ namespace effetopo
             {
                 Log.Error(ex, "Error creating ribbon UI");
                 throw; // Re-throw to be handled by the calling method
+            }
+        }
+
+        private RibbonPanel ObtainCommandsRibbonPanel()
+        {
+            var existing = TryFindRibbonPanel(RibbonPanelName);
+            if (existing != null)
+            {
+                return existing;
+            }
+
+            EnsureRibbonTabExists();
+            try
+            {
+                return UIControlledApplication.CreateRibbonPanel(BASE_NAME, RibbonPanelName);
+            }
+            catch (Exception ex)
+            {
+                var retry = TryFindRibbonPanel(RibbonPanelName);
+                if (retry != null)
+                {
+                    return retry;
+                }
+
+                Log.Error(ex, "Error creating ribbon panel {PanelName}", RibbonPanelName);
+                throw;
+            }
+        }
+
+        private RibbonPanel? TryFindRibbonPanel(string panelName)
+        {
+            try
+            {
+                var panels = UIControlledApplication.GetRibbonPanels(BASE_NAME);
+                if (panels == null)
+                {
+                    return null;
+                }
+
+                foreach (RibbonPanel panel in panels)
+                {
+                    if (string.Equals(panel.Name, panelName, StringComparison.Ordinal))
+                    {
+                        return panel;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Ribbon: could not enumerate panels on tab {Tab}: {Message}", BASE_NAME, ex.Message);
+            }
+
+            return null;
+        }
+
+        private void EnsureRibbonTabExists()
+        {
+            try
+            {
+                UIControlledApplication.CreateRibbonTab(BASE_NAME);
+                Log.Debug("Created ribbon tab {TabName}", BASE_NAME);
+            }
+            catch (Autodesk.Revit.Exceptions.ArgumentException ex)
+            {
+                Log.Debug(
+                    "CreateRibbonTab skipped (tab may already exist): {TabName}. {Message}",
+                    BASE_NAME,
+                    ex.Message);
             }
         }
 

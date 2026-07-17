@@ -1,9 +1,10 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Reflection;
+using System.Windows.Media.Imaging;
 using Autodesk.Revit.UI;
 using effetopo.Commands;
-using Nice3point.Revit.Extensions;
 
 namespace effetopo.Services
 {
@@ -12,14 +13,25 @@ namespace effetopo.Services
     /// </summary>
     public class ToposolidToolsRibbonService
     {
-        private const string Icon16 = "/effetopo;component/Resources/Icons/RibbonIcon16.png";
-        private const string Icon32 = "/effetopo;component/Resources/Icons/RibbonIcon32.png";
+        private const string Icon16 = "pack://application:,,,/effetopo;component/Resources/Icons/RibbonIcon16.png";
+        private const string Icon32 = "pack://application:,,,/effetopo;component/Resources/Icons/RibbonIcon32.png";
+
+        private static readonly Dictionary<string, Type> CommandTypes = new Dictionary<string, Type>(StringComparer.Ordinal)
+        {
+            [JoinMultipleToposolidsCommand.COMMAND_NAME] = typeof(JoinMultipleToposolidsCommand),
+            [MergeProposalToposolidCommand.COMMAND_NAME] = typeof(MergeProposalToposolidCommand),
+            [FloorFollowTopoCommand.COMMAND_NAME] = typeof(FloorFollowTopoCommand),
+            [ModifyTopoCommand.COMMAND_NAME] = typeof(ModifyTopoCommand),
+        };
 
         private static ToposolidToolsRibbonService _instance;
         private static readonly object _lock = new object();
 
         private SplitButton _splitButton;
         private readonly Dictionary<string, PushButton> _pushButtons = new Dictionary<string, PushButton>(StringComparer.Ordinal);
+        private readonly Uri _icon16Uri = new Uri(Icon16, UriKind.Absolute);
+        private readonly Uri _icon32Uri = new Uri(Icon32, UriKind.Absolute);
+        private readonly string _assemblyPath = Assembly.GetExecutingAssembly().Location;
 
         public static ToposolidToolsRibbonService Instance
         {
@@ -49,8 +61,6 @@ namespace effetopo.Services
             _splitButton = panel.AddItem(splitData) as SplitButton;
             if (_splitButton == null) return;
 
-            _splitButton.SetImage(Icon16);
-            _splitButton.SetLargeImage(Icon32);
             _splitButton.ToolTip = "Toposolid merge and join tools";
             _splitButton.IsSynchronizedWithCurrentItem = true;
             _pushButtons.Clear();
@@ -131,26 +141,23 @@ namespace effetopo.Services
 
         private PushButton AddPushButton(ToposolidToolDefinition definition)
         {
-            PushButton pushButton = definition.CommandId switch
+            if (!CommandTypes.TryGetValue(definition.CommandId, out Type commandType))
             {
-                _ when definition.CommandId == JoinMultipleToposolidsCommand.COMMAND_NAME =>
-                    _splitButton.AddPushButton<JoinMultipleToposolidsCommand>(definition.CommandId),
-                _ when definition.CommandId == MergeProposalToposolidCommand.COMMAND_NAME =>
-                    _splitButton.AddPushButton<MergeProposalToposolidCommand>(definition.CommandId),
-                _ when definition.CommandId == FloorFollowTopoCommand.COMMAND_NAME =>
-                    _splitButton.AddPushButton<FloorFollowTopoCommand>(definition.CommandId),
-                _ when definition.CommandId == ModifyTopoCommand.COMMAND_NAME =>
-                    _splitButton.AddPushButton<ModifyTopoCommand>(definition.CommandId),
-                _ => null
+                return null;
+            }
+
+            var data = new PushButtonData(
+                definition.CommandId,
+                definition.ItemText,
+                _assemblyPath,
+                commandType.FullName!)
+            {
+                Image = new BitmapImage(_icon16Uri),
+                LargeImage = new BitmapImage(_icon32Uri),
+                ToolTip = definition.ToolTip
             };
 
-            if (pushButton == null) return null;
-
-            pushButton.ItemText = definition.ItemText;
-            pushButton.SetImage(Icon16);
-            pushButton.SetLargeImage(Icon32);
-            pushButton.ToolTip = definition.ToolTip;
-            return pushButton;
+            return _splitButton.AddPushButton(data);
         }
 
         private static List<ToposolidToolDefinition> GetCommandDefinitions()

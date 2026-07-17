@@ -1,0 +1,6 @@
+<Project>
+    <PropertyGroup Condition="'$(MSBuildProjectName)' == 'effetopo'">
+        <!-- Keep main-project NuGet restore artifacts off Synology Drive (avoids restore "file already exists"). -->
+        <MSBuildProjectExtensionsPath>$(LOCALAPPDATA)\EFFE\msbuild\effetopo\</MSBuildProjectExtensionsPath>
+    </PropertyGroup>
+</Project>
