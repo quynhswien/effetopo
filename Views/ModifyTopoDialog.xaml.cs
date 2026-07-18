@@ -65,7 +65,7 @@ namespace effetopo.Views
                 SetDefaults();
 
             SelectTool(_selectedTool);
-            SetPreviewStatus("Hover over the toposolid in the 3D view to preview points.");
+            SetPreviewStatus("Di chuột lên Toposolid trong view 3D để xem preview stamp.");
         }
 
         /// <summary>Modeless dialog result: true = Ok, false = Cancel, null = still open.</summary>
@@ -303,7 +303,7 @@ namespace effetopo.Views
             if (shapeTool)
             {
                 ShowPreviewCheck.IsChecked = true;
-                SetPreviewStatus("Bấm «Pick & Preview Stamp» — chọn nhiều điểm, Esc để quay lại. Ok mới ghi vào topo.");
+                SetPreviewStatus("Di chuột lên topo trong view 3D để preview. Pick để chọn điểm, Ok để ghi.");
                 SetDraftStampCount(0);
             }
 
