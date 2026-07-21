@@ -98,6 +98,51 @@ namespace effetopo.Services
 
         internal static string FormatLineStyleDisplayName(string lineStyleName) =>
             string.IsNullOrEmpty(lineStyleName) ? "(Default)" : lineStyleName;
+
+        internal static double GetShortCurveTolerance(Document doc)
+        {
+            try
+            {
+                double tolerance = doc?.Application?.ShortCurveTolerance ?? 0;
+                if (tolerance > 0)
+                    return tolerance;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Could not read ShortCurveTolerance: {Error}", ex.Message);
+            }
+
+            return 1.0 / 128.0;
+        }
+
+        internal static List<XYZ> CollapseNearDuplicatePoints(IEnumerable<XYZ> points, double minDistance)
+        {
+            var collapsed = new List<XYZ>();
+            if (points == null)
+                return collapsed;
+
+            foreach (XYZ point in points)
+            {
+                if (point == null)
+                    continue;
+
+                if (collapsed.Count == 0 || collapsed[collapsed.Count - 1].DistanceTo(point) >= minDistance)
+                    collapsed.Add(point);
+            }
+
+            if (collapsed.Count >= 3)
+            {
+                XYZ first = collapsed[0];
+                XYZ last = collapsed[collapsed.Count - 1];
+                if (first.DistanceTo(last) < minDistance)
+                    collapsed.RemoveAt(collapsed.Count - 1);
+            }
+
+            return collapsed;
+        }
+
+        internal static bool IsSegmentLongEnough(XYZ a, XYZ b, double minLength) =>
+            a != null && b != null && a.DistanceTo(b) >= minLength;
     }
 #endif
 }

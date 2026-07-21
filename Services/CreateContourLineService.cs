@@ -59,8 +59,10 @@ namespace effetopo.Services
                 : minorLineStyle;
 
             ElementId levelId = ResolveLevelId(doc, options);
+            double minSegmentLength = CreateContourLineRevitHelper.GetShortCurveTolerance(doc);
 
             int curveCount = 0;
+            int skippedShortSegments = 0;
             int majorCurveCount = 0;
             int minorCurveCount = 0;
             var elevations = new HashSet<double>();
@@ -80,12 +82,28 @@ namespace effetopo.Services
                 if (isMajor)
                     majorElevations.Add(Math.Round(elevation, 6));
 
-                int created = CreateModelCurvesForPolyline(doc, polyline, lineStyle, levelId);
+                int created = CreateModelCurvesForPolyline(
+                    doc, polyline, lineStyle, levelId, minSegmentLength, ref skippedShortSegments);
                 curveCount += created;
                 if (isMajor)
                     majorCurveCount += created;
                 else
                     minorCurveCount += created;
+            }
+
+            if (curveCount == 0)
+            {
+                throw new InvalidOperationException(
+                    "No model curves could be created. Contour segments are shorter than Revit's minimum curve length. " +
+                    "Try increasing the contour interval.");
+            }
+
+            if (skippedShortSegments > 0)
+            {
+                Log.Information(
+                    "Create contour lines skipped {SkippedCount} segment(s) shorter than {Tolerance:F6} ft",
+                    skippedShortSegments,
+                    minSegmentLength);
             }
 
             double minZ = triangles.Min(t => Math.Min(t.V0.Z, Math.Min(t.V1.Z, t.V2.Z)));
@@ -125,30 +143,36 @@ namespace effetopo.Services
             Document doc,
             IList<XYZ> points,
             GraphicsStyle lineStyle,
-            ElementId levelId)
+            ElementId levelId,
+            double minSegmentLength,
+            ref int skippedShortSegments)
         {
+            List<XYZ> simplified = CreateContourLineRevitHelper.CollapseNearDuplicatePoints(
+                points, minSegmentLength * 0.5);
+            if (simplified.Count < 2)
+                return 0;
+
             int created = 0;
-            double z = points[0].Z;
+            double z = simplified[0].Z;
             SketchPlane sketchPlane = CreateSketchPlaneAtElevation(doc, z);
 
-            if (points.Count == 2)
+            for (int i = 0; i < simplified.Count - 1; i++)
             {
-                CreateModelCurve(doc, Line.CreateBound(points[0], points[1]), sketchPlane, lineStyle, levelId);
-                return 1;
-            }
-
-            for (int i = 0; i < points.Count - 1; i++)
-            {
-                XYZ a = points[i];
-                XYZ b = points[i + 1];
-                if (a.DistanceTo(b) < 1e-6)
+                XYZ a = simplified[i];
+                XYZ b = simplified[i + 1];
+                if (!CreateContourLineRevitHelper.IsSegmentLongEnough(a, b, minSegmentLength))
+                {
+                    skippedShortSegments++;
                     continue;
+                }
 
                 if (Math.Abs(sketchPlane.GetPlane().Origin.Z - a.Z) > 1e-6)
                     sketchPlane = CreateSketchPlaneAtElevation(doc, a.Z);
 
-                CreateModelCurve(doc, Line.CreateBound(a, b), sketchPlane, lineStyle, levelId);
-                created++;
+                if (TryCreateModelCurve(doc, Line.CreateBound(a, b), sketchPlane, lineStyle, levelId))
+                    created++;
+                else
+                    skippedShortSegments++;
             }
 
             return created;
@@ -160,19 +184,32 @@ namespace effetopo.Services
             return SketchPlane.Create(doc, plane);
         }
 
-        private static void CreateModelCurve(
+        private static bool TryCreateModelCurve(
             Document doc,
             Curve curve,
             SketchPlane sketchPlane,
             GraphicsStyle lineStyle,
             ElementId levelId)
         {
-            ModelCurve modelCurve = doc.Create.NewModelCurve(curve, sketchPlane);
-            if (lineStyle != null)
-                modelCurve.LineStyle = lineStyle;
+            if (curve == null || sketchPlane == null)
+                return false;
 
-            if (levelId != ElementId.InvalidElementId)
-                CreateContourLineRevitHelper.TryAssignReferenceLevel(modelCurve, levelId);
+            try
+            {
+                ModelCurve modelCurve = doc.Create.NewModelCurve(curve, sketchPlane);
+                if (lineStyle != null)
+                    modelCurve.LineStyle = lineStyle;
+
+                if (levelId != ElementId.InvalidElementId)
+                    CreateContourLineRevitHelper.TryAssignReferenceLevel(modelCurve, levelId);
+
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Skipped contour model curve: {Error}", ex.Message);
+                return false;
+            }
         }
 
         private static ElementId ToElementId(long value)

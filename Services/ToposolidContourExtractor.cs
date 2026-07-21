@@ -166,7 +166,10 @@ namespace effetopo.Services
             hits = DeduplicatePoints(hits);
 
             if (hits.Count == 2)
-                segments.Add((hits[0], hits[1]));
+            {
+                if (hits[0].DistanceTo(hits[1]) >= PointTolerance)
+                    segments.Add((hits[0], hits[1]));
+            }
         }
 
         private static void AddEdgeHit(XYZ a, XYZ b, double z, List<XYZ> hits)
@@ -229,10 +232,26 @@ namespace effetopo.Services
                 } while (extended);
 
                 if (chain.Count >= 2)
-                    polylines.Add(chain);
+                {
+                    IList<XYZ> cleaned = RemoveNearDuplicateVertices(chain, PointTolerance);
+                    if (cleaned.Count >= 2)
+                        polylines.Add(cleaned);
+                }
             }
 
             return polylines;
+        }
+
+        private static List<XYZ> RemoveNearDuplicateVertices(IList<XYZ> chain, double tolerance)
+        {
+            var cleaned = new List<XYZ>();
+            foreach (XYZ point in chain)
+            {
+                if (cleaned.Count == 0 || cleaned[cleaned.Count - 1].DistanceTo(point) >= tolerance)
+                    cleaned.Add(point);
+            }
+
+            return cleaned;
         }
 
         private static bool TryAppendSegment(List<XYZ> chain, (XYZ A, XYZ B) segment)
