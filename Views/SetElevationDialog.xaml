@@ -18,11 +18,10 @@
 
         <TextBlock Grid.Row="0" FontSize="18" FontWeight="SemiBold" Text="Set Elevation"/>
         <TextBlock Grid.Row="0" Margin="0,28,0,16" TextWrapping="Wrap" Foreground="#555"
-                   Text="Assign elevations to model lines and splines. The first selected curve uses Start Elevation; each next curve adds Increment."/>
+                   Text="Click model lines or splines one at a time. Each click applies the next elevation (Start + Increment). Labels and data are saved automatically."/>
 
         <StackPanel Grid.Row="1">
-            <CheckBox x:Name="AddLabelCheckBox" Margin="0,0,0,12" Content="Add Label"
-                      Checked="AddLabelCheckBox_Changed" Unchecked="AddLabelCheckBox_Changed"/>
+            <CheckBox x:Name="AddLabelCheckBox" Margin="0,0,0,12" Content="Add Label"/>
 
             <DockPanel Margin="0,0,0,12" LastChildFill="True">
                 <TextBlock Width="130" VerticalAlignment="Center" Text="Text Type"/>
@@ -49,7 +48,7 @@
 
             <DockPanel Margin="0,0,0,4" LastChildFill="True">
                 <TextBlock Width="130" VerticalAlignment="Center" Text="Override Color"/>
-                <ComboBox x:Name="OverrideColorCombo" Height="28" SelectionChanged="OverrideColorCombo_SelectionChanged">
+                <ComboBox x:Name="OverrideColorCombo" Height="28">
                     <ComboBox.ItemTemplate>
                         <DataTemplate>
                             <StackPanel Orientation="Horizontal">

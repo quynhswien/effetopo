@@ -45,8 +45,14 @@ namespace effetopo.Views
             PopulateTextTypes();
             PopulateColorCombo();
 
+            AddLabelCheckBox.Checked += AddLabelCheckBox_Changed;
+            AddLabelCheckBox.Unchecked += AddLabelCheckBox_Changed;
+            OverrideColorCombo.SelectionChanged += OverrideColorCombo_SelectionChanged;
+
             if (initialSettings != null)
                 ApplySettings(initialSettings);
+            else
+                AddLabelCheckBox.IsChecked = true;
 
             UpdateTextTypeEnabled();
         }
@@ -59,6 +65,7 @@ namespace effetopo.Views
 
         private void OverrideColorCombo_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
+            if (e.AddedItems.Count == 0) return;
             if (OverrideColorCombo.SelectedItem is ColorOption option)
             {
                 _colorR = option.R;
@@ -166,6 +173,7 @@ namespace effetopo.Views
 
         private void UpdateTextTypeEnabled()
         {
+            if (TextTypeCombo == null || AddLabelCheckBox == null) return;
             TextTypeCombo.IsEnabled = AddLabelCheckBox.IsChecked == true;
         }
 

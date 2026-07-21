@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+
 namespace effetopo.Models
 {
     /// <summary>
@@ -17,7 +20,7 @@ namespace effetopo.Models
     /// </summary>
     public class SetElevationSettings
     {
-        public bool AddLabel { get; set; }
+        public bool AddLabel { get; set; } = true;
 
         public long TextTypeId { get; set; }
 
@@ -69,7 +72,7 @@ namespace effetopo.Models
     /// </summary>
     public class SetElevationOptions
     {
-        public bool AddLabel { get; set; }
+        public bool AddLabel { get; set; } = true;
 
         public long TextTypeId { get; set; }
 
@@ -84,15 +87,61 @@ namespace effetopo.Models
     }
 
     /// <summary>
+    /// Linked elevation assignment stored in project metadata and local data file.
+    /// </summary>
+    public class SetElevationLineRecord
+    {
+        public int SequenceOrder { get; set; }
+
+        public long CurveElementId { get; set; }
+
+        public long TextNoteElementId { get; set; }
+
+        public double ElevationFeet { get; set; }
+
+        public string FormattedElevation { get; set; } = string.Empty;
+
+        public DateTime AssignedAt { get; set; }
+    }
+
+    /// <summary>
+    /// Full elevation session linked across curves, persisted per project.
+    /// </summary>
+    public class SetElevationProjectData
+    {
+        public string ProjectUniqueId { get; set; } = string.Empty;
+
+        public string ProjectName { get; set; } = string.Empty;
+
+        public DateTime LastUpdated { get; set; }
+
+        public ElevationBaseType ElevationBase { get; set; }
+
+        public double StartElevationFeet { get; set; }
+
+        public double IncrementFeet { get; set; }
+
+        public long TextTypeId { get; set; }
+
+        public int NextSequenceIndex { get; set; }
+
+        public List<SetElevationLineRecord> Lines { get; set; } = new List<SetElevationLineRecord>();
+    }
+
+    /// <summary>
     /// Result of applying elevation to a single model curve.
     /// </summary>
     public class SetElevationLineResult
     {
         public long ElementId { get; set; }
 
+        public int SequenceOrder { get; set; }
+
         public double DisplayElevation { get; set; }
 
         public string FormattedElevation { get; set; } = string.Empty;
+
+        public long TextNoteElementId { get; set; }
 
         public bool Success { get; set; }
 

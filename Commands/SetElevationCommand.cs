@@ -1,5 +1,4 @@
 using System;
-using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
@@ -13,7 +12,7 @@ using JetBrains.Annotations;
 namespace effetopo.Commands
 {
     /// <summary>
-    /// Sets elevation on model lines and splines with optional labels and graphic overrides.
+    /// Sets elevation on model lines and splines interactively — each click applies the next step.
     /// </summary>
     [UsedImplicitly]
     [Transaction(TransactionMode.Manual)]
@@ -47,74 +46,100 @@ namespace effetopo.Commands
                 }
 
                 SetElevationOptions options = dialog.SelectedOptions;
-                IList<Reference> pickedRefs;
-                try
+                SetElevationDataService.Instance.EnsureSchemaRegistered();
+
+                View activeView = uidoc.ActiveView ?? doc.ActiveView;
+                if (activeView == null)
                 {
-                    pickedRefs = uidoc.Selection.PickObjects(
-                        ObjectType.Element,
-                        new ModelCurveSelectionFilter(),
-                        "Select model lines or splines (in order). Press Finish when done.");
+                    message = "No active view. Open a plan, section, or 3D view before setting elevation.";
+                    RevitNotificationHandler.ShowGeneralMessageDialog("Error", message);
+                    return Result.Failed;
                 }
-                catch (Exception ex) when (IsUserCancel(ex))
+
+                SetElevationProjectData projectData = SetElevationDataService.Instance.Load(doc);
+                EnsureSequenceIndex(projectData);
+
+                int appliedCount = 0;
+                int sequenceIndex = projectData.NextSequenceIndex;
+
+                while (true)
                 {
-                    Log.Information("User cancelled model curve selection");
+                    string nextElevationHint = FormatNextElevation(doc, options, sequenceIndex);
+                    Reference pickedRef;
+                    try
+                    {
+                        pickedRef = uidoc.Selection.PickObject(
+                            ObjectType.Element,
+                            new ModelCurveSelectionFilter(),
+                            $"Click a model line or spline. Next elevation: {nextElevationHint}. Press Esc to finish.");
+                    }
+                    catch (Exception ex) when (IsUserCancel(ex))
+                    {
+                        break;
+                    }
+
+                    if (pickedRef == null)
+                        break;
+
+                    Element element = doc.GetElement(pickedRef);
+                    if (!(element is ModelCurve modelCurve) || !IsSupportedCurve(modelCurve))
+                    {
+                        RevitNotificationHandler.ShowGeneralMessageDialog("Selection Error",
+                            "Selected element is not a model line or spline.");
+                        continue;
+                    }
+
+                    SetElevationLineResult result;
+                    using (Transaction tx = new Transaction(doc, "Set Elevation"))
+                    {
+                        tx.Start();
+                        try
+                        {
+                            result = SetElevationService.Instance.ApplySingle(
+                                doc, activeView, modelCurve, options, projectData, sequenceIndex);
+                            SetElevationDataService.Instance.Save(
+                                doc, projectData, includeProjectMetadata: true, includeLocalFile: false);
+                            doc.Regenerate();
+                            tx.Commit();
+                        }
+                        catch (Exception ex)
+                        {
+                            Log.Error(ex, "Set Elevation click failed");
+                            if (tx.HasStarted())
+                                tx.RollBack();
+                            RevitNotificationHandler.ShowGeneralMessageDialog("Error",
+                                $"Failed to set elevation:\n{ex.Message}");
+                            continue;
+                        }
+                    }
+
+                    SetElevationDataService.Instance.Save(
+                        doc, projectData, includeProjectMetadata: false, includeLocalFile: true);
+
+                    if (result.Success)
+                    {
+                        appliedCount++;
+                        sequenceIndex++;
+                        uidoc.Selection.SetElementIds(new System.Collections.Generic.List<ElementId> { modelCurve.Id });
+                        uidoc.RefreshActiveView();
+                    }
+                    else if (!string.IsNullOrEmpty(result.Message))
+                    {
+                        RevitNotificationHandler.ShowGeneralMessageDialog("Set Elevation", result.Message);
+                    }
+                }
+
+                if (appliedCount == 0)
+                {
+                    Log.Information("SetElevation finished with no changes");
                     return Result.Cancelled;
                 }
 
-                if (pickedRefs == null || pickedRefs.Count == 0)
-                {
-                    message = "No model lines or splines selected";
-                    RevitNotificationHandler.ShowGeneralMessageDialog("Selection Error", message);
-                    return Result.Failed;
-                }
-
-                var curves = new List<ModelCurve>();
-                foreach (Reference reference in pickedRefs)
-                {
-                    Element element = doc.GetElement(reference);
-                    if (element is ModelCurve modelCurve && IsSupportedCurve(modelCurve))
-                        curves.Add(modelCurve);
-                }
-
-                if (curves.Count == 0)
-                {
-                    message = "Selected elements are not model lines or splines";
-                    RevitNotificationHandler.ShowGeneralMessageDialog("Selection Error", message);
-                    return Result.Failed;
-                }
-
-                IReadOnlyList<SetElevationLineResult> results;
-                using (Transaction tx = new Transaction(doc, "Set Elevation"))
-                {
-                    tx.Start();
-                    try
-                    {
-                        results = SetElevationService.Instance.Apply(doc, uidoc.ActiveView, curves, options);
-                        tx.Commit();
-                    }
-                    catch (Exception ex)
-                    {
-                        Log.Error(ex, "Set Elevation operation failed");
-                        tx.RollBack();
-                        message = ex.Message;
-                        RevitNotificationHandler.ShowGeneralMessageDialog("Error", message);
-                        return Result.Failed;
-                    }
-                }
-
-                int successCount = results.Count(r => r.Success);
-                uidoc.Selection.SetElementIds(curves.Select(c => c.Id).ToList());
-
-                string detail = $"Updated {successCount} of {results.Count} curve(s).\n\n";
-                for (int i = 0; i < results.Count; i++)
-                {
-                    SetElevationLineResult result = results[i];
-                    string status = result.Success ? result.FormattedElevation : $"Failed: {result.Message}";
-                    detail += $"{i + 1}. {status}\n";
-                }
-
-                RevitNotificationHandler.ShowGeneralMessageDialog("Set Elevation Complete", detail.TrimEnd());
-                Log.Information("SetElevation completed: {Success}/{Total}", successCount, results.Count);
+                string summary = $"Set elevation on {appliedCount} curve(s).\n" +
+                    $"Total linked assignments in project: {projectData.Lines.Count}";
+                RevitNotificationHandler.ShowGeneralMessageDialog("Set Elevation Complete", summary);
+                Log.Information("SetElevation completed: {Applied} applied, {Total} total linked",
+                    appliedCount, projectData.Lines.Count);
                 return Result.Succeeded;
             }
             catch (Exception ex)
@@ -123,6 +148,39 @@ namespace effetopo.Commands
                 message = ex.Message;
                 RevitNotificationHandler.ShowGeneralMessageDialog("Error", message);
                 return Result.Failed;
+            }
+        }
+
+        private static void EnsureSequenceIndex(SetElevationProjectData projectData)
+        {
+            projectData.Lines ??= new System.Collections.Generic.List<SetElevationLineRecord>();
+
+            if (projectData.Lines.Count == 0)
+            {
+                projectData.NextSequenceIndex = 0;
+                return;
+            }
+
+            int maxOrder = projectData.Lines.Max(line => line.SequenceOrder);
+            if (projectData.NextSequenceIndex <= maxOrder)
+                projectData.NextSequenceIndex = maxOrder + 1;
+        }
+
+        private static string FormatNextElevation(Document doc, SetElevationOptions options, int sequenceIndex)
+        {
+            double elevationFeet = options.StartElevationFeet + sequenceIndex * options.IncrementFeet;
+            try
+            {
+                Units units = doc.GetUnits();
+#if REVIT2024_OR_GREATER
+                return UnitFormatUtils.Format(units, SpecTypeId.Length, elevationFeet, false);
+#else
+                return UnitFormatUtils.Format(units, UnitType.UT_Length, elevationFeet, false, false);
+#endif
+            }
+            catch
+            {
+                return elevationFeet.ToString("F3");
             }
         }
 
