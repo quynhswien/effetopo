@@ -75,13 +75,22 @@ namespace effetopo.Services
                     try
                     {
                         textNoteId = UpdateOrCreateLabel(
-                            doc, view, projectData, modelCurve.Id, labelPoint,
+                            doc, view, projectData, modelCurve, labelPoint,
                             lineResult.FormattedElevation, textTypeId);
+                        Log.Information(
+                            "Created elevation label {TextId} on curve {CurveId} in view {ViewName}",
+                            textNoteId, lineResult.ElementId, view?.Name ?? "unknown");
                     }
                     catch (Exception labelEx)
                     {
                         Log.Warning(labelEx, "Could not create elevation label on curve {Id}", lineResult.ElementId);
+                        lineResult.Message = $"Elevation set, but label failed: {labelEx.Message}";
                     }
+                }
+                else if (options.AddLabel)
+                {
+                    Log.Warning("Add Label is enabled but no Text Type is available in the project.");
+                    lineResult.Message = "Elevation set, but no Text Type was found for the label.";
                 }
 
                 lineResult.TextNoteElementId = textNoteId;
@@ -145,12 +154,17 @@ namespace effetopo.Services
             Document doc,
             View view,
             SetElevationProjectData projectData,
-            ElementId curveId,
+            ModelCurve modelCurve,
             XYZ labelPoint,
             string text,
             ElementId textTypeId)
         {
-            long curveElementId = GetElementIdValue(curveId);
+            long curveElementId = GetElementIdValue(modelCurve.Id);
+            View labelView = ResolveLabelView(doc, view, labelPoint);
+            if (labelView == null)
+                throw new InvalidOperationException("No suitable view found for elevation labels.");
+
+            XYZ notePosition = GetLabelPosition(labelView, labelPoint);
             SetElevationLineRecord? existing = SetElevationDataService.Instance.FindRecord(projectData, curveElementId);
 
             if (existing?.TextNoteElementId > 0)
@@ -158,21 +172,54 @@ namespace effetopo.Services
                 ElementId noteId = CreateElementId(existing.TextNoteElementId);
                 if (doc.GetElement(noteId) is TextNote existingNote)
                 {
-                    existingNote.Text = text;
-                    MoveTextNote(existingNote, labelPoint);
-                    return existing.TextNoteElementId;
+                    if (existingNote.OwnerViewId == labelView.Id)
+                    {
+                        existingNote.Text = text;
+                        MoveTextNote(existingNote, notePosition);
+                        return existing.TextNoteElementId;
+                    }
+
+                    doc.Delete(noteId);
                 }
             }
 
-            View labelView = ResolveLabelView(doc, view);
-            if (labelView == null)
-                throw new InvalidOperationException("No suitable view found for elevation labels.");
-
-            TextNote created = TextNote.Create(doc, labelView.Id, labelPoint, text, textTypeId);
-            if (created == null)
-                throw new InvalidOperationException("Revit could not create the elevation text note.");
-
+            TextNote created = CreateTextNote(doc, labelView, notePosition, text, textTypeId);
             return GetElementIdValue(created.Id);
+        }
+
+        private static TextNote CreateTextNote(
+            Document doc,
+            View labelView,
+            XYZ position,
+            string text,
+            ElementId textTypeId)
+        {
+#if REVIT2024_OR_GREATER
+            var options = new TextNoteOptions(textTypeId)
+            {
+                HorizontalAlignment = HorizontalTextAlignment.Center,
+                VerticalAlignment = VerticalTextAlignment.Middle
+            };
+            TextNote created = TextNote.Create(doc, labelView.Id, position, text, options);
+#else
+            TextNote created = TextNote.Create(doc, labelView.Id, position, text, textTypeId);
+#endif
+            if (created == null)
+                throw new InvalidOperationException(
+                    $"Revit could not create a text note in view \"{labelView.Name}\".");
+
+            return created;
+        }
+
+        private static XYZ GetLabelPosition(View labelView, XYZ labelPoint)
+        {
+            if (labelView is ViewPlan plan)
+            {
+                double z = plan.GenLevel?.Elevation ?? labelPoint.Z;
+                return new XYZ(labelPoint.X, labelPoint.Y, z);
+            }
+
+            return labelPoint;
         }
 
         private static void MoveTextNote(TextNote textNote, XYZ target)
@@ -307,24 +354,61 @@ namespace effetopo.Services
             view.SetElementOverrides(elementId, ogs);
         }
 
-        private static View ResolveLabelView(Document doc, View activeView)
+        private static View ResolveLabelView(Document doc, View activeView, XYZ labelPoint)
         {
-            if (activeView != null && activeView.CanBePrinted && !activeView.IsTemplate)
-            {
-                if (activeView.ViewType == ViewType.FloorPlan ||
-                    activeView.ViewType == ViewType.CeilingPlan ||
-                    activeView.ViewType == ViewType.EngineeringPlan ||
-                    activeView.ViewType == ViewType.Section ||
-                    activeView.ViewType == ViewType.Elevation)
-                {
-                    return activeView;
-                }
-            }
+            if (IsAnnotationView(activeView))
+                return activeView;
+
+            ViewPlan levelPlan = FindPlanViewForElevation(doc, labelPoint.Z);
+            if (levelPlan != null)
+                return levelPlan;
 
             return new FilteredElementCollector(doc)
                 .OfClass(typeof(ViewPlan))
                 .Cast<ViewPlan>()
                 .FirstOrDefault(v => !v.IsTemplate && v.ViewType == ViewType.FloorPlan);
+        }
+
+        private static bool IsAnnotationView(View view)
+        {
+            if (view == null || view.IsTemplate)
+                return false;
+
+            return view.ViewType == ViewType.FloorPlan ||
+                   view.ViewType == ViewType.CeilingPlan ||
+                   view.ViewType == ViewType.EngineeringPlan ||
+                   view.ViewType == ViewType.Section ||
+                   view.ViewType == ViewType.Elevation ||
+                   view.ViewType == ViewType.Detail;
+        }
+
+        private static ViewPlan FindPlanViewForElevation(Document doc, double modelZ)
+        {
+            Level bestLevel = null;
+            double bestDistance = double.MaxValue;
+
+            foreach (Level level in new FilteredElementCollector(doc)
+                         .OfClass(typeof(Level))
+                         .Cast<Level>())
+            {
+                double distance = Math.Abs(level.Elevation - modelZ);
+                if (distance < bestDistance)
+                {
+                    bestDistance = distance;
+                    bestLevel = level;
+                }
+            }
+
+            if (bestLevel == null)
+                return null;
+
+            return new FilteredElementCollector(doc)
+                .OfClass(typeof(ViewPlan))
+                .Cast<ViewPlan>()
+                .FirstOrDefault(v =>
+                    !v.IsTemplate &&
+                    v.ViewType == ViewType.FloorPlan &&
+                    v.GenLevel?.Id == bestLevel.Id);
         }
 
         private static string FormatElevation(Document doc, double elevationFeet)

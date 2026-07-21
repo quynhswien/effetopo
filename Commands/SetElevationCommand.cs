@@ -137,6 +137,13 @@ namespace effetopo.Commands
 
                 string summary = $"Set elevation on {appliedCount} curve(s).\n" +
                     $"Total linked assignments in project: {projectData.Lines.Count}";
+
+                if (options.AddLabel && activeView.ViewType == ViewType.ThreeD)
+                {
+                    summary += "\n\nElevation labels were placed in the matching floor plan view " +
+                               "(Text Notes are not visible in 3D view). Open the corresponding plan to see them.";
+                }
+
                 RevitNotificationHandler.ShowGeneralMessageDialog("Set Elevation Complete", summary);
                 Log.Information("SetElevation completed: {Applied} applied, {Total} total linked",
                     appliedCount, projectData.Lines.Count);
