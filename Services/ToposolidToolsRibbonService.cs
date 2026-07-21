@@ -23,6 +23,7 @@ namespace effetopo.Services
             [FloorFollowTopoCommand.COMMAND_NAME] = typeof(FloorFollowTopoCommand),
             [ModifyTopoCommand.COMMAND_NAME] = typeof(ModifyTopoCommand),
             [SetElevationCommand.COMMAND_NAME] = typeof(SetElevationCommand),
+            [CreateContourLineCommand.COMMAND_NAME] = typeof(CreateContourLineCommand),
         };
 
         private static ToposolidToolsRibbonService _instance;
@@ -189,6 +190,11 @@ namespace effetopo.Services
                     SetElevationCommand.COMMAND_NAME,
                     "Set\nElevation",
                     "Set Elevation\nAssign elevations to model lines and splines with optional labels",
+                    isFloorCommand: true),
+                new ToposolidToolDefinition(
+                    CreateContourLineCommand.COMMAND_NAME,
+                    "Create Contour\nLine",
+                    "Create Contour Line\nGenerate model lines from Toposolid contour elevations",
                     isFloorCommand: true)
             };
         }
