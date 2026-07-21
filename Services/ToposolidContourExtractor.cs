@@ -11,7 +11,9 @@ namespace effetopo.Services
     /// </summary>
     internal static class ToposolidContourExtractor
     {
-        private const double PointTolerance = 1e-4;
+        private const double VertexSnapTolerance = 1.0 / 256.0;
+        private const double PlaneTolerance = 1e-6;
+        private const double MinFaceNormalZ = 0.35;
 
         internal sealed class Triangle
         {
@@ -65,7 +67,8 @@ namespace effetopo.Services
                 foreach (Triangle triangle in triangles)
                     AddTriangleSegmentsAtElevation(triangle, z, segments);
 
-                allPolylines.AddRange(ChainSegments(segments));
+                segments = DeduplicateSegments(segments, VertexSnapTolerance);
+                allPolylines.AddRange(ChainSegments(segments, intervalFeet));
             }
 
             return allPolylines;
@@ -119,6 +122,9 @@ namespace effetopo.Services
                 {
                     foreach (Face face in solid.Faces)
                     {
+                        if (!IsUpwardFacingFace(face, transform))
+                            continue;
+
                         Mesh mesh = face.Triangulate();
                         if (mesh == null) continue;
                         AddMeshTriangles(mesh, transform, triangles);
@@ -136,6 +142,26 @@ namespace effetopo.Services
             }
         }
 
+        private static bool IsUpwardFacingFace(Face face, Transform transform)
+        {
+            try
+            {
+                BoundingBoxUV bbox = face.GetBoundingBox();
+                if (bbox == null)
+                    return false;
+
+                UV mid = new UV(
+                    (bbox.Min.U + bbox.Max.U) * 0.5,
+                    (bbox.Min.V + bbox.Max.V) * 0.5);
+                XYZ normal = transform.OfVector(face.ComputeNormal(mid));
+                return normal.Z >= MinFaceNormalZ;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
         private static void AddMeshTriangles(Mesh mesh, Transform transform, List<Triangle> triangles)
         {
             for (int i = 0; i < mesh.NumTriangles; i++)
@@ -147,7 +173,7 @@ namespace effetopo.Services
 
                 XYZ edge1 = v1 - v0;
                 XYZ edge2 = v2 - v0;
-                if (edge1.CrossProduct(edge2).Z <= 0.1)
+                if (edge1.CrossProduct(edge2).Z <= MinFaceNormalZ)
                     continue;
 
                 triangles.Add(new Triangle { V0 = v0, V1 = v1, V2 = v2 });
@@ -160,86 +186,284 @@ namespace effetopo.Services
             List<(XYZ A, XYZ B)> segments)
         {
             var hits = new List<XYZ>();
-            AddEdgeHit(triangle.V0, triangle.V1, z, hits);
-            AddEdgeHit(triangle.V1, triangle.V2, z, hits);
-            AddEdgeHit(triangle.V2, triangle.V0, z, hits);
-            hits = DeduplicatePoints(hits);
+            CollectEdgeIntersections(triangle.V0, triangle.V1, z, hits);
+            CollectEdgeIntersections(triangle.V1, triangle.V2, z, hits);
+            CollectEdgeIntersections(triangle.V2, triangle.V0, z, hits);
+            hits = DeduplicatePoints(hits, VertexSnapTolerance);
 
             if (hits.Count == 2)
-            {
-                if (hits[0].DistanceTo(hits[1]) >= PointTolerance)
-                    segments.Add((hits[0], hits[1]));
-            }
+                TryAddSegment(hits[0], hits[1], segments);
         }
 
-        private static void AddEdgeHit(XYZ a, XYZ b, double z, List<XYZ> hits)
+        private static void CollectEdgeIntersections(XYZ a, XYZ b, double z, List<XYZ> hits)
         {
-            const double tolerance = 1e-6;
-            if (Math.Abs(a.Z - z) < tolerance)
+            bool aOn = Math.Abs(a.Z - z) < PlaneTolerance;
+            bool bOn = Math.Abs(b.Z - z) < PlaneTolerance;
+
+            if (aOn)
                 hits.Add(new XYZ(a.X, a.Y, z));
-            if (Math.Abs(b.Z - z) < tolerance)
+            if (bOn)
                 hits.Add(new XYZ(b.X, b.Y, z));
 
-            if (Math.Abs(a.Z - b.Z) < tolerance)
+            if (aOn && bOn)
                 return;
 
-            if ((a.Z - z) * (b.Z - z) > tolerance)
+            if (Math.Abs(a.Z - b.Z) < PlaneTolerance)
+                return;
+
+            if ((a.Z - z) * (b.Z - z) > PlaneTolerance)
                 return;
 
             double t = (z - a.Z) / (b.Z - a.Z);
-            if (t < -tolerance || t > 1 + tolerance)
+            if (t < -PlaneTolerance || t > 1 + PlaneTolerance)
                 return;
 
             hits.Add(new XYZ(a.X + t * (b.X - a.X), a.Y + t * (b.Y - a.Y), z));
         }
 
-        private static List<XYZ> DeduplicatePoints(List<XYZ> points)
+        private static void TryAddSegment(XYZ a, XYZ b, List<(XYZ A, XYZ B)> segments)
+        {
+            if (a == null || b == null)
+                return;
+
+            if (a.DistanceTo(b) < VertexSnapTolerance)
+                return;
+
+            segments.Add((a, b));
+        }
+
+        private static List<XYZ> DeduplicatePoints(IList<XYZ> points, double tolerance)
         {
             var unique = new List<XYZ>();
             foreach (XYZ point in points)
             {
-                if (!unique.Any(existing => existing.DistanceTo(point) < PointTolerance))
+                if (!unique.Any(existing => existing.DistanceTo(point) < tolerance))
                     unique.Add(point);
             }
+
             return unique;
         }
 
-        private static List<IList<XYZ>> ChainSegments(List<(XYZ A, XYZ B)> segments)
+        private static List<(XYZ A, XYZ B)> DeduplicateSegments(
+            IList<(XYZ A, XYZ B)> segments,
+            double tolerance)
         {
-            var polylines = new List<IList<XYZ>>();
-            if (segments.Count == 0)
-                return polylines;
+            var unique = new List<(XYZ A, XYZ B)>();
+            var keys = new HashSet<string>(StringComparer.Ordinal);
 
-            var unused = new List<(XYZ A, XYZ B)>(segments);
-
-            while (unused.Count > 0)
+            foreach ((XYZ a, XYZ b) in segments)
             {
-                var chain = new List<XYZ> { unused[0].A, unused[0].B };
-                unused.RemoveAt(0);
+                string key = BuildUndirectedSegmentKey(a, b, tolerance);
+                if (!keys.Add(key))
+                    continue;
 
-                bool extended;
-                do
+                unique.Add((a, b));
+            }
+
+            return unique;
+        }
+
+        private static string BuildUndirectedSegmentKey(XYZ a, XYZ b, double tolerance)
+        {
+            string keyA = BuildSnapKey(a, tolerance);
+            string keyB = BuildSnapKey(b, tolerance);
+            return string.CompareOrdinal(keyA, keyB) <= 0
+                ? $"{keyA}|{keyB}"
+                : $"{keyB}|{keyA}";
+        }
+
+        private static string BuildSnapKey(XYZ point, double tolerance)
+        {
+            long x = (long)Math.Round(point.X / tolerance);
+            long y = (long)Math.Round(point.Y / tolerance);
+            long z = (long)Math.Round(point.Z / tolerance);
+            return $"{x}:{y}:{z}";
+        }
+
+        private static List<IList<XYZ>> ChainSegments(
+            IList<(XYZ A, XYZ B)> segments,
+            double intervalFeet)
+        {
+            if (segments == null || segments.Count == 0)
+                return new List<IList<XYZ>>();
+
+            var builder = new ContourSegmentGraph(VertexSnapTolerance);
+            foreach ((XYZ a, XYZ b) in segments)
+                builder.AddSegment(a, b);
+
+            double maxSegmentLength = ComputeMaxSegmentLength(segments, intervalFeet);
+            return builder.BuildPolylines(maxSegmentLength);
+        }
+
+        private static double ComputeMaxSegmentLength(
+            IList<(XYZ A, XYZ B)> segments,
+            double intervalFeet)
+        {
+            var lengths = segments
+                .Select(s => s.A.DistanceTo(s.B))
+                .Where(length => length > VertexSnapTolerance)
+                .OrderBy(length => length)
+                .ToList();
+
+            if (lengths.Count == 0)
+                return Math.Max(intervalFeet * 8.0, 10.0);
+
+            double median = lengths[lengths.Count / 2];
+            double p90 = lengths[(int)Math.Min(lengths.Count - 1, Math.Floor(lengths.Count * 0.9))];
+            return Math.Max(intervalFeet * 8.0, Math.Max(median * 6.0, p90 * 2.5));
+        }
+
+        private sealed class ContourSegmentGraph
+        {
+            private readonly double _snapTolerance;
+            private readonly List<XYZ> _vertices = new();
+            private readonly Dictionary<string, int> _vertexIndex = new(StringComparer.Ordinal);
+            private readonly List<(int A, int B)> _edges = new();
+
+            public ContourSegmentGraph(double snapTolerance)
+            {
+                _snapTolerance = snapTolerance;
+            }
+
+            public void AddSegment(XYZ a, XYZ b)
+            {
+                int indexA = GetOrAddVertex(a);
+                int indexB = GetOrAddVertex(b);
+                if (indexA == indexB)
+                    return;
+
+                _edges.Add((indexA, indexB));
+            }
+
+            public List<IList<XYZ>> BuildPolylines(double maxSegmentLength)
+            {
+                var polylines = new List<IList<XYZ>>();
+                var usedEdges = new bool[_edges.Count];
+                var adjacency = BuildAdjacency();
+
+                for (int edgeIndex = 0; edgeIndex < _edges.Count; edgeIndex++)
                 {
-                    extended = false;
-                    for (int i = unused.Count - 1; i >= 0; i--)
+                    if (usedEdges[edgeIndex])
+                        continue;
+
+                    (int a, int b) = _edges[edgeIndex];
+                    double length = _vertices[a].DistanceTo(_vertices[b]);
+                    if (length > maxSegmentLength)
                     {
-                        if (TryAppendSegment(chain, unused[i]))
-                        {
-                            unused.RemoveAt(i);
-                            extended = true;
-                        }
+                        usedEdges[edgeIndex] = true;
+                        continue;
                     }
-                } while (extended);
 
-                if (chain.Count >= 2)
-                {
-                    IList<XYZ> cleaned = RemoveNearDuplicateVertices(chain, PointTolerance);
+                    var chain = new List<XYZ> { _vertices[a], _vertices[b] };
+                    usedEdges[edgeIndex] = true;
+
+                    ExtendChain(chain, a, forward: false, adjacency, usedEdges, maxSegmentLength);
+                    ExtendChain(chain, b, forward: true, adjacency, usedEdges, maxSegmentLength);
+
+                    IList<XYZ> cleaned = RemoveNearDuplicateVertices(chain, _snapTolerance);
                     if (cleaned.Count >= 2)
                         polylines.Add(cleaned);
                 }
+
+                return polylines;
             }
 
-            return polylines;
+            private Dictionary<int, List<(int Neighbor, int EdgeIndex)>> BuildAdjacency()
+            {
+                var adjacency = new Dictionary<int, List<(int, int)>>();
+                for (int i = 0; i < _edges.Count; i++)
+                {
+                    (int a, int b) = _edges[i];
+                    AddAdjacency(adjacency, a, b, i);
+                    AddAdjacency(adjacency, b, a, i);
+                }
+
+                return adjacency;
+            }
+
+            private static void AddAdjacency(
+                Dictionary<int, List<(int Neighbor, int EdgeIndex)>> adjacency,
+                int from,
+                int to,
+                int edgeIndex)
+            {
+                if (!adjacency.TryGetValue(from, out List<(int, int)> list))
+                {
+                    list = new List<(int, int)>();
+                    adjacency[from] = list;
+                }
+
+                list.Add((to, edgeIndex));
+            }
+
+            private void ExtendChain(
+                List<XYZ> chain,
+                int tipVertex,
+                bool forward,
+                Dictionary<int, List<(int Neighbor, int EdgeIndex)>> adjacency,
+                bool[] usedEdges,
+                double maxSegmentLength)
+            {
+                int current = tipVertex;
+                XYZ incoming = forward
+                    ? chain[chain.Count - 2]
+                    : chain[1];
+                XYZ tip = _vertices[current];
+
+                while (true)
+                {
+                    if (!adjacency.TryGetValue(current, out List<(int Neighbor, int EdgeIndex)> links))
+                        break;
+
+                    XYZ direction = (tip - incoming).Normalize();
+                    (int bestNeighbor, int bestEdge) = (-1, -1);
+                    double bestScore = double.MinValue;
+
+                    foreach ((int neighbor, int edgeIndex) in links)
+                    {
+                        if (usedEdges[edgeIndex])
+                            continue;
+
+                        double length = _vertices[current].DistanceTo(_vertices[neighbor]);
+                        if (length > maxSegmentLength)
+                            continue;
+
+                        XYZ outgoing = (_vertices[neighbor] - _vertices[current]).Normalize();
+                        double score = direction.DotProduct(outgoing);
+                        if (score > bestScore)
+                        {
+                            bestScore = score;
+                            bestNeighbor = neighbor;
+                            bestEdge = edgeIndex;
+                        }
+                    }
+
+                    if (bestNeighbor < 0)
+                        break;
+
+                    usedEdges[bestEdge] = true;
+                    incoming = _vertices[current];
+                    current = bestNeighbor;
+                    tip = _vertices[current];
+
+                    if (forward)
+                        chain.Add(tip);
+                    else
+                        chain.Insert(0, tip);
+                }
+            }
+
+            private int GetOrAddVertex(XYZ point)
+            {
+                string key = BuildSnapKey(point, _snapTolerance);
+                if (_vertexIndex.TryGetValue(key, out int index))
+                    return index;
+
+                index = _vertices.Count;
+                _vertices.Add(new XYZ(point.X, point.Y, point.Z));
+                _vertexIndex[key] = index;
+                return index;
+            }
         }
 
         private static List<XYZ> RemoveNearDuplicateVertices(IList<XYZ> chain, double tolerance)
@@ -251,36 +475,15 @@ namespace effetopo.Services
                     cleaned.Add(point);
             }
 
+            if (cleaned.Count >= 3)
+            {
+                XYZ first = cleaned[0];
+                XYZ last = cleaned[cleaned.Count - 1];
+                if (first.DistanceTo(last) < tolerance)
+                    cleaned.RemoveAt(cleaned.Count - 1);
+            }
+
             return cleaned;
-        }
-
-        private static bool TryAppendSegment(List<XYZ> chain, (XYZ A, XYZ B) segment)
-        {
-            XYZ start = chain[0];
-            XYZ end = chain[chain.Count - 1];
-
-            if (end.DistanceTo(segment.A) < PointTolerance)
-            {
-                chain.Add(segment.B);
-                return true;
-            }
-            if (end.DistanceTo(segment.B) < PointTolerance)
-            {
-                chain.Add(segment.A);
-                return true;
-            }
-            if (start.DistanceTo(segment.B) < PointTolerance)
-            {
-                chain.Insert(0, segment.A);
-                return true;
-            }
-            if (start.DistanceTo(segment.A) < PointTolerance)
-            {
-                chain.Insert(0, segment.B);
-                return true;
-            }
-
-            return false;
         }
     }
 #endif
