@@ -388,7 +388,7 @@ namespace effetopo.Views
             MeshDensityBox.IsEnabled = meshTool;
             ModifyBoundaryCheck.IsEnabled = meshTool;
 
-            ShowPreviewCheck.IsEnabled = shapeTool || tool == ModifyTopoTool.InflateSurface;
+            ShowPreviewCheck.IsEnabled = shapeTool || shapeLineTool || tool == ModifyTopoTool.InflateSurface;
             PickApplyBtn.Visibility = shapeTool ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
             PickLinesBtn.Visibility = shapeLineTool ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
             ApplyBtn.Visibility = shapeTool || shapeLineTool ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible;
@@ -401,8 +401,9 @@ namespace effetopo.Views
             }
             else if (shapeLineTool)
             {
-                ShowPreviewCheck.IsChecked = false;
-                SetPreviewStatus("Bấm Pick Lines để chọn model line / spline. Điểm được thêm theo cao độ line.");
+                ShowPreviewCheck.IsChecked = true;
+                SetPreviewStatus("Bấm Pick Lines. Tab để chọn line liên tiếp. Preview cam trước khi Ok.");
+                SetDraftStampCount(0);
             }
 
             double inactiveOpacity = 0.45;

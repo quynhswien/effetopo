@@ -358,6 +358,31 @@ namespace effetopo.Services
                 result.Summary);
             return result;
         }
+
+        public ModifyTopoResult ApplyShapeByLines(
+            Document doc,
+            Toposolid toposolid,
+            IEnumerable<Curve> curves,
+            ModifyTopoOptions options)
+        {
+            if (curves == null)
+                throw new ArgumentNullException(nameof(curves));
+
+            ModifyTopoResult last = null;
+            foreach (Curve curve in curves)
+            {
+                if (curve == null)
+                    continue;
+                last = ApplyShapeByLine(doc, toposolid, curve, options);
+            }
+
+            return last ?? new ModifyTopoResult
+            {
+                OriginalPointCount = CountSlabShapeVertices(toposolid),
+                PointsAfterModification = CountSlabShapeVertices(toposolid),
+                Summary = "No curves applied."
+            };
+        }
 #endif
 
         private static string BuildSummary(ModifyTopoOptions options, int modified, int added, int removed, int afterCount)

@@ -28,6 +28,98 @@ namespace effetopo.Services
             public int TotalVerticesModified;
         }
 
+        public sealed class LineDefinition
+        {
+            public IList<XYZ> SamplePoints;
+        }
+
+        /// <summary>
+        /// Apply shape-by-line sample points sequentially on base vertices and build preview geometry.
+        /// </summary>
+        public static CalculateResult CalculateWithLines(
+            Document doc,
+            Toposolid toposolid,
+            IReadOnlyList<ModifyTopoService.SculptVertexSnapshot> baseVertices,
+            IReadOnlyList<LineDefinition> lines)
+        {
+            if (baseVertices == null)
+                throw new ArgumentNullException(nameof(baseVertices));
+
+            var working = CloneVertices(baseVertices);
+            int totalAdded = 0;
+            int totalModified = 0;
+
+            if (lines != null)
+            {
+                foreach (LineDefinition line in lines)
+                {
+                    if (line?.SamplePoints == null || line.SamplePoints.Count == 0)
+                        continue;
+
+                    StampResult step = ApplyShapeByLineVertices(working, line.SamplePoints);
+                    working = step.Vertices;
+                    totalAdded += step.PointsAdded;
+                    totalModified += step.VerticesModified;
+                }
+            }
+
+            IList<GeometryObject> previewSolids = ToposolidPreviewGeometrySampler.SampleExactSolid(
+                doc, toposolid, baseVertices.ToList(), working);
+
+            return new CalculateResult
+            {
+                Vertices = working,
+                Mesh = new TerrainMesh(),
+                PreviewSolids = previewSolids,
+                TotalPointsAdded = totalAdded,
+                TotalVerticesModified = totalModified
+            };
+        }
+
+        /// <summary>In-memory shape-by-line — sets Z from sample points along curves.</summary>
+        public static StampResult ApplyShapeByLineVertices(
+            IList<ModifyTopoService.SculptVertexSnapshot> vertices,
+            IList<XYZ> samplePoints)
+        {
+            if (vertices == null || samplePoints == null)
+                throw new ArgumentNullException();
+
+            var working = CloneVertices(vertices);
+            int pointsAdded = 0;
+            int verticesModified = 0;
+            const double xyTol = 0.15;
+            const double zTolerance = 1e-6;
+
+            foreach (XYZ point in samplePoints)
+            {
+                ModifyTopoService.SculptVertexSnapshot existing = working
+                    .FirstOrDefault(v => HorizontalDistance(v.X, v.Y, point.X, point.Y) < xyTol);
+
+                if (existing != null)
+                {
+                    if (Math.Abs(existing.Z - point.Z) > zTolerance)
+                        verticesModified++;
+                    existing.Z = point.Z;
+                    continue;
+                }
+
+                working.Add(new ModifyTopoService.SculptVertexSnapshot
+                {
+                    X = point.X,
+                    Y = point.Y,
+                    Z = point.Z
+                });
+                pointsAdded++;
+            }
+
+            return new StampResult
+            {
+                Vertices = working,
+                PointsAdded = pointsAdded,
+                VerticesModified = verticesModified
+            };
+        }
+
         /// <summary>
         /// Apply all stamps sequentially on base vertices and build the preview mesh.
         /// </summary>

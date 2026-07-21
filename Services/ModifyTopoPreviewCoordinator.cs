@@ -56,6 +56,8 @@ namespace effetopo.Services
 
         private readonly ModifyTopoDraftSession _draftSession;
 
+        private readonly ModifyTopoLineDraftSession _lineDraftSession;
+
         private readonly TerrainDirectContext3DPreview _dc3dPreview;
 
         private readonly TerrainMeshDirectShapePreview _directShapePreview;
@@ -94,6 +96,8 @@ namespace effetopo.Services
 
             _draftSession = new ModifyTopoDraftSession(_doc, toposolid, _geometryCache);
 
+            _lineDraftSession = new ModifyTopoLineDraftSession(_doc, toposolid);
+
             _dc3dPreview = TerrainDirectContext3DPreview.Instance;
 
             _dc3dPreview.BindSession(_doc, _uidoc);
@@ -106,27 +110,48 @@ namespace effetopo.Services
 
 
 
-        public bool HasPendingDraft => _draftSession?.HasPendingChanges == true;
+        public bool HasPendingDraft =>
+            _draftSession?.HasPendingChanges == true || _lineDraftSession?.HasPendingChanges == true;
 
 
 
-        public ModifyTopoResult CommitDraftIfPending()
+        public ModifyTopoResult CommitDraftIfPending(ModifyTopoTool tool)
 
         {
 
-            if (_draftSession == null || !_draftSession.HasPendingChanges)
+            if (tool == ModifyTopoTool.ShapeByLine && _lineDraftSession?.HasPendingChanges == true)
 
-                return null;
+            {
+
+                ClearPreview();
+
+                ModifyTopoResult result = _lineDraftSession.Commit();
+
+                try { _uidoc.RefreshActiveView(); } catch { }
+
+                return result;
+
+            }
 
 
 
-            ClearPreview();
+            if (tool == ModifyTopoTool.ShapeByPoint && _draftSession?.HasPendingChanges == true)
 
-            ModifyTopoResult result = _draftSession.Commit();
+            {
 
-            try { _uidoc.RefreshActiveView(); } catch { }
+                ClearPreview();
 
-            return result;
+                ModifyTopoResult result = _draftSession.Commit();
+
+                try { _uidoc.RefreshActiveView(); } catch { }
+
+                return result;
+
+            }
+
+
+
+            return null;
 
         }
 
@@ -210,7 +235,17 @@ namespace effetopo.Services
 
             if (_dialog.TryGetLiveOptions(out ModifyTopoOptions options))
 
-                _draftSession.UpdateLiveShapeOptions(options);
+            {
+
+                if (options.Tool == ModifyTopoTool.ShapeByPoint)
+
+                    _draftSession.UpdateLiveShapeOptions(options);
+
+                else if (options.Tool == ModifyTopoTool.ShapeByLine)
+
+                    _lineDraftSession.UpdateLiveLineOptions(options);
+
+            }
 
             RefreshDraftPreview();
 
@@ -311,8 +346,9 @@ namespace effetopo.Services
                 return;
 
             _pickInProgress = true;
-            int linesThisSession = 0;
-            int originalCount = ModifyTopoService.Instance.CountSlabShapeVertices(_toposolid);
+            int chainsThisSession = 0;
+            int totalLinesThisSession = 0;
+            bool usePreview = options.ShowPreview;
 
             try
             {
@@ -323,51 +359,47 @@ namespace effetopo.Services
                     if (!_dialog.TryGetLiveOptions(out options))
                         break;
 
+                    usePreview = options.ShowPreview;
+
                     try
                     {
-                        string prompt = linesThisSession == 0
-                            ? "Select model lines or splines to shape the Toposolid. Press Esc when done."
-                            : $"Applied {linesThisSession} line(s) — select another line or Esc to return.";
+                        string prompt = chainsThisSession == 0
+                            ? "Chọn model line / spline. Tab để mở rộng chuỗi line liên tiếp. Esc khi xong."
+                            : $"Đã xử lý {chainsThisSession} chuỗi ({totalLinesThisSession} line) — chọn tiếp hoặc Esc để quay lại.";
 
-                        Reference reference = _uidoc.Selection.PickObject(
-                            ObjectType.Element,
+                        IList<ElementId> chainIds = ModelCurveChainPicker.PickCurveChainWithTab(
+                            _uiApp,
+                            _uidoc,
                             new ModelCurveSelectionFilter(),
                             prompt);
 
-                        Element element = _doc.GetElement(reference);
-                        if (element is not ModelCurve modelCurve)
+                        if (chainIds == null || chainIds.Count == 0)
                             continue;
 
-                        Curve curve = modelCurve.GeometryCurve;
-                        if (curve == null)
+                        if (usePreview)
                         {
-                            SetStatus("Selected element has no curve geometry.");
-                            continue;
-                        }
+                            ModifyTopoDraftStampResult staged = _lineDraftSession.StageCurves(chainIds, options);
+                            chainsThisSession++;
+                            totalLinesThisSession += chainIds.Count;
+                            UpdateLineDraftUi();
+                            RefreshLineDraftPreview();
 
-                        ModifyTopoResult result;
-                        using (Transaction tx = new Transaction(_doc, "Shape By Line"))
+                            SetStatus(
+                                $"Chuỗi {chainsThisSession}: +{staged.PointsAdded} điểm preview " +
+                                $"({chainIds.Count} line, tổng {_lineDraftSession.LineCount} line). Ok để ghi.");
+                        }
+                        else
                         {
-                            tx.Start();
-                            try
-                            {
-                                result = ModifyTopoService.Instance.ApplyShapeByLine(
-                                    _doc, _toposolid, curve, options);
-                                tx.Commit();
-                            }
-                            catch (Exception ex)
-                            {
-                                tx.RollBack();
-                                Log.Warning(ex, "Shape by Line failed");
-                                SetStatus($"Lỗi: {ex.Message}");
-                                continue;
-                            }
+                            ModifyTopoResult result = ApplyCurvesImmediate(chainIds, options);
+                            chainsThisSession++;
+                            totalLinesThisSession += chainIds.Count;
+                            _dialog.UpdatePointCounts(
+                                result.OriginalPointCount,
+                                result.PointsAfterModification);
+                            SetStatus(
+                                $"Chuỗi {chainsThisSession}: +{result.PointsAdded} điểm, " +
+                                $"{result.VerticesModified} cập nhật ({chainIds.Count} line). Esc để quay lại.");
                         }
-
-                        linesThisSession++;
-                        _dialog.UpdatePointCounts(originalCount, result.PointsAfterModification);
-                        SetStatus(
-                            $"Line {linesThisSession}: +{result.PointsAdded} points, {result.VerticesModified} updated. Esc để quay lại.");
                     }
                     catch (Autodesk.Revit.Exceptions.OperationCanceledException)
                     {
@@ -375,8 +407,14 @@ namespace effetopo.Services
                     }
                 }
 
-                if (linesThisSession > 0)
-                    SetStatus($"Đã áp dụng {linesThisSession} line(s). Ok để đóng hoặc Pick Lines tiếp.");
+                if (chainsThisSession > 0)
+                {
+                    if (usePreview)
+                        SetStatus(
+                            $"Đã stage {totalLinesThisSession} line(s) trong preview. Ok để ghi vào Toposolid.");
+                    else
+                        SetStatus($"Đã áp dụng {totalLinesThisSession} line(s). Ok để đóng hoặc Pick Lines tiếp.");
+                }
                 else
                     SetStatus("Thoát chế độ pick — chưa chọn line nào.");
             }
@@ -392,6 +430,44 @@ namespace effetopo.Services
                 _pickInProgress = false;
                 try { _uidoc.RefreshActiveView(); } catch { }
             }
+        }
+
+        private ModifyTopoResult ApplyCurvesImmediate(IList<ElementId> curveIds, ModifyTopoOptions options)
+        {
+            ModifyTopoResult last = null;
+            using (Transaction tx = new Transaction(_doc, "Shape By Line"))
+            {
+                tx.Start();
+                try
+                {
+                    foreach (ElementId id in curveIds)
+                    {
+                        if (_doc.GetElement(id) is not ModelCurve modelCurve)
+                            continue;
+
+                        Curve curve = modelCurve.GeometryCurve;
+                        if (curve == null)
+                            continue;
+
+                        last = ModifyTopoService.Instance.ApplyShapeByLine(
+                            _doc, _toposolid, curve, options);
+                    }
+
+                    tx.Commit();
+                }
+                catch (Exception ex)
+                {
+                    tx.RollBack();
+                    Log.Warning(ex, "Shape by Line failed");
+                    throw;
+                }
+            }
+
+            return last ?? new ModifyTopoResult
+            {
+                OriginalPointCount = ModifyTopoService.Instance.CountSlabShapeVertices(_toposolid),
+                PointsAfterModification = ModifyTopoService.Instance.CountSlabShapeVertices(_toposolid)
+            };
         }
 
         private sealed class ModelCurveSelectionFilter : ISelectionFilter
@@ -602,21 +678,57 @@ namespace effetopo.Services
 
 
 
+        private void UpdateLineDraftUi()
+
+        {
+
+            _dialog.UpdatePointCounts(_lineDraftSession.OriginalPointCount, _lineDraftSession.DraftPointCount);
+
+            _dialog.SetDraftStampCount(_lineDraftSession.LineCount);
+
+        }
+
+
+
         private void RefreshDraftPreview()
 
         {
 
-            if (!_dialog.TryGetLiveOptions(out ModifyTopoOptions options) ||
+            if (!_dialog.TryGetLiveOptions(out ModifyTopoOptions options))
 
-                options.Tool != ModifyTopoTool.ShapeByPoint ||
+                return;
 
-                !options.ShowPreview ||
 
-                !_draftSession.HasPendingChanges)
+
+            if (options.Tool == ModifyTopoTool.ShapeByPoint)
 
             {
 
-                if (!_draftSession.HasPendingChanges)
+                RefreshStampDraftPreview(options);
+
+                return;
+
+            }
+
+
+
+            if (options.Tool == ModifyTopoTool.ShapeByLine)
+
+                RefreshLineDraftPreview();
+
+        }
+
+
+
+        private void RefreshStampDraftPreview(ModifyTopoOptions options)
+
+        {
+
+            if (!options.ShowPreview || !_draftSession.HasPendingChanges)
+
+            {
+
+                if (!_draftSession.HasPendingChanges && !_lineDraftSession.HasPendingChanges)
 
                     ClearPreview();
 
@@ -627,6 +739,36 @@ namespace effetopo.Services
 
 
             ShowCalculatedMesh(_draftSession.LastCalculated, _doc.ActiveView?.Id ?? ElementId.InvalidElementId);
+
+        }
+
+
+
+        private void RefreshLineDraftPreview()
+
+        {
+
+            if (!_dialog.TryGetLiveOptions(out ModifyTopoOptions options) ||
+
+                options.Tool != ModifyTopoTool.ShapeByLine ||
+
+                !options.ShowPreview ||
+
+                !_lineDraftSession.HasPendingChanges)
+
+            {
+
+                if (!_draftSession.HasPendingChanges && !_lineDraftSession.HasPendingChanges)
+
+                    ClearPreview();
+
+                return;
+
+            }
+
+
+
+            ShowCalculatedMesh(_lineDraftSession.LastCalculated, _doc.ActiveView?.Id ?? ElementId.InvalidElementId);
 
         }
 

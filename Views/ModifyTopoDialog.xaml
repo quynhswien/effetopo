@@ -215,7 +215,7 @@
                                 </Border>
 
                                 <TextBlock Margin="0,8,0,0" Foreground="#777" TextWrapping="Wrap"
-                                           Text="Bấm «Pick Lines» để chọn model line / spline. Điểm được thêm theo cao độ của line; Esc để quay lại hộp thoại."/>
+                                           Text="Bấm «Pick Lines» để chọn model line / spline. Tab để mở rộng chuỗi line liên tiếp. Bật Show Preview để xem khối cam trước khi Ok. Esc để quay lại hộp thoại."/>
                             </StackPanel>
 
                             <!-- Smooth Geometry -->

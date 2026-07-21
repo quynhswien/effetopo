@@ -72,13 +72,19 @@ namespace effetopo.Commands
 
                     if (options.Tool == ModifyTopoTool.ShapeByPoint)
                     {
-                        ModifyTopoResult commitResult = preview.CommitDraftIfPending();
+                        ModifyTopoResult commitResult = preview.CommitDraftIfPending(ModifyTopoTool.ShapeByPoint);
                         if (commitResult != null)
                             currentCount = commitResult.PointsAfterModification;
                     }
 
                     if (options.Tool == ModifyTopoTool.ShapeByLine)
-                        currentCount = topoService.CountSlabShapeVertices(toposolid);
+                    {
+                        ModifyTopoResult commitResult = preview.CommitDraftIfPending(ModifyTopoTool.ShapeByLine);
+                        if (commitResult != null)
+                            currentCount = commitResult.PointsAfterModification;
+                        else
+                            currentCount = topoService.CountSlabShapeVertices(toposolid);
+                    }
                     }
 
                     savedSettings = settingsService.Load();
@@ -113,7 +119,7 @@ namespace effetopo.Commands
                         currentCount = topoService.CountSlabShapeVertices(toposolid);
                         if (closeAfter)
                         {
-                            string shapeDetail = $"Shape by Line complete.\n\n" +
+                            string shapeDetail = $"Shape by Line committed.\n\n" +
                                 $"Original points: {originalCount}\n" +
                                 $"Current points: {currentCount}";
                             RevitNotificationHandler.ShowGeneralMessageDialog("Modify Toposolid Complete", shapeDetail);
@@ -121,7 +127,7 @@ namespace effetopo.Commands
                         }
 
                         RevitNotificationHandler.ShowGeneralMessageDialog("Changes Applied",
-                            $"Shape by Line applied.\nCurrent points: {currentCount}");
+                            $"Shape by Line committed.\nCurrent points: {currentCount}");
                         continue;
                     }
 
