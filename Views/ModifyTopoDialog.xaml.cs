@@ -19,6 +19,7 @@ namespace effetopo.Views
 
         public event EventHandler LiveOptionsChanged;
         public event EventHandler RequestPickAndApplyStamp;
+        public event EventHandler RequestPickAndApplyLines;
         public event EventHandler RequestUndoDraftStamp;
 
         public ModifyTopoOptions? SelectedOptions { get; private set; }
@@ -45,6 +46,7 @@ namespace effetopo.Views
             SetupUnits();
             PopulateFalloffCombos();
             PopulateSmoothAlgoCombo();
+            SetupLineSamplingUi();
             WireLivePreviewEvents();
 
             ShapePointDensitySlider.ValueChanged += (_, e) =>
@@ -154,6 +156,53 @@ namespace effetopo.Views
             SmoothStrengthSlider.ValueChanged += (_, __) => RaiseLiveOptionsChanged();
         }
 
+        private void SetupLineSamplingUi()
+        {
+            if (_useMillimeters)
+            {
+                LineDistPreset1.Content = "300 mm (Default)";
+                LineDistPreset2.Content = "500 mm";
+                LineDistPreset3.Content = "1000 mm";
+                LineDistUnitText.Text = "mm";
+                LineDistCustomTextBox.Text = "300";
+            }
+            else
+            {
+                LineDistPreset1.Content = "1' (Default)";
+                LineDistPreset2.Content = "2'";
+                LineDistPreset3.Content = "4'";
+                LineDistUnitText.Text = "feet";
+                LineDistCustomTextBox.Text = "1";
+            }
+
+            LineCountPreset1.Content = "5 segments (6 points)";
+            LineCountPreset2.Content = "10 segments (11 points)";
+            LineCountPreset3.Content = "20 segments (21 points)";
+            LineCountCustomTextBox.Text = "10";
+
+            LineDistanceModeOption.Checked += (_, __) => SetLineModePanels(true);
+            LineCountModeOption.Checked += (_, __) => SetLineModePanels(false);
+
+            LineDistCustomOption.Checked += (_, __) => LineDistCustomTextBox.IsEnabled = true;
+            LineDistPreset1.Checked += (_, __) => LineDistCustomTextBox.IsEnabled = false;
+            LineDistPreset2.Checked += (_, __) => LineDistCustomTextBox.IsEnabled = false;
+            LineDistPreset3.Checked += (_, __) => LineDistCustomTextBox.IsEnabled = false;
+
+            LineCountCustomOption.Checked += (_, __) => LineCountCustomTextBox.IsEnabled = true;
+            LineCountPreset1.Checked += (_, __) => LineCountCustomTextBox.IsEnabled = false;
+            LineCountPreset2.Checked += (_, __) => LineCountCustomTextBox.IsEnabled = false;
+            LineCountPreset3.Checked += (_, __) => LineCountCustomTextBox.IsEnabled = false;
+        }
+
+        private void SetLineModePanels(bool distanceMode)
+        {
+            if (LineDistancePanel == null || LineCountPanel == null)
+                return;
+
+            LineDistancePanel.IsEnabled = distanceMode;
+            LineCountPanel.IsEnabled = !distanceMode;
+        }
+
         private void RaiseLiveOptionsChanged() => LiveOptionsChanged?.Invoke(this, EventArgs.Empty);
 
         private void SetupUnits()
@@ -243,7 +292,47 @@ namespace effetopo.Views
             CurvatureThresholdBox.Text = settings.CurvatureThreshold.ToString(CultureInfo.InvariantCulture);
             RemeshEntireCheck.IsChecked = settings.RemeshEntireSurface;
 
+            ApplyLineSamplingSettings(settings);
+
             SelectTool(settings.LastTool);
+        }
+
+        private void ApplyLineSamplingSettings(ModifyTopoSettings settings)
+        {
+            if (settings.LineSampleMode == BoundarySampleMode.BySegmentCount)
+            {
+                LineCountModeOption.IsChecked = true;
+                SetLineModePanels(false);
+
+                if (settings.LineUseCustomSegmentCount)
+                {
+                    LineCountCustomOption.IsChecked = true;
+                    LineCountCustomTextBox.Text = settings.LineCustomSegmentCount.ToString(CultureInfo.InvariantCulture);
+                }
+                else if (settings.LineSegmentPresetIndex == 2)
+                    LineCountPreset3.IsChecked = true;
+                else if (settings.LineSegmentPresetIndex == 1)
+                    LineCountPreset2.IsChecked = true;
+                else
+                    LineCountPreset1.IsChecked = true;
+            }
+            else
+            {
+                LineDistanceModeOption.IsChecked = true;
+                SetLineModePanels(true);
+
+                if (settings.LineUseCustomSpacing)
+                {
+                    LineDistCustomOption.IsChecked = true;
+                    LineDistCustomTextBox.Text = settings.LineCustomSpacingDisplay.ToString(CultureInfo.InvariantCulture);
+                }
+                else if (settings.LineDistancePresetIndex == 1)
+                    LineDistPreset2.IsChecked = true;
+                else if (settings.LineDistancePresetIndex == 2)
+                    LineDistPreset3.IsChecked = true;
+                else
+                    LineDistPreset1.IsChecked = true;
+            }
         }
 
         private static void SelectComboByTag(ComboBox combo, Enum value)
@@ -271,11 +360,13 @@ namespace effetopo.Views
             InflateToolBtn.IsChecked = tool == ModifyTopoTool.InflateSurface;
             MeshToolBtn.IsChecked = tool == ModifyTopoTool.MeshControl;
             ShapeToolBtn.IsChecked = tool == ModifyTopoTool.ShapeByPoint;
+            ShapeLineToolBtn.IsChecked = tool == ModifyTopoTool.ShapeByLine;
             SmoothToolBtn.IsChecked = tool == ModifyTopoTool.SmoothGeometry;
 
             InflatePanel.Visibility = tool == ModifyTopoTool.InflateSurface ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
             MeshPanel.Visibility = tool == ModifyTopoTool.MeshControl ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
             ShapePanel.Visibility = tool == ModifyTopoTool.ShapeByPoint ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+            ShapeLinePanel.Visibility = tool == ModifyTopoTool.ShapeByLine ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
             SmoothPanel.Visibility = tool == ModifyTopoTool.SmoothGeometry ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
 
             UpdateToolDependentControls(tool);
@@ -286,6 +377,7 @@ namespace effetopo.Views
         {
             bool meshTool = tool == ModifyTopoTool.MeshControl;
             bool shapeTool = tool == ModifyTopoTool.ShapeByPoint;
+            bool shapeLineTool = tool == ModifyTopoTool.ShapeByLine;
 
             PointGridSettingsBorder.IsEnabled = meshTool;
             PointGridSettingsPanel.IsEnabled = meshTool;
@@ -298,13 +390,19 @@ namespace effetopo.Views
 
             ShowPreviewCheck.IsEnabled = shapeTool || tool == ModifyTopoTool.InflateSurface;
             PickApplyBtn.Visibility = shapeTool ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
-            ApplyBtn.Visibility = shapeTool ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible;
+            PickLinesBtn.Visibility = shapeLineTool ? System.Windows.Visibility.Visible : System.Windows.Visibility.Collapsed;
+            ApplyBtn.Visibility = shapeTool || shapeLineTool ? System.Windows.Visibility.Collapsed : System.Windows.Visibility.Visible;
 
             if (shapeTool)
             {
                 ShowPreviewCheck.IsChecked = true;
                 SetPreviewStatus("Di chuột lên topo trong view 3D để preview. Pick để chọn điểm, Ok để ghi.");
                 SetDraftStampCount(0);
+            }
+            else if (shapeLineTool)
+            {
+                ShowPreviewCheck.IsChecked = false;
+                SetPreviewStatus("Bấm Pick Lines để chọn model line / spline. Điểm được thêm theo cao độ line.");
             }
 
             double inactiveOpacity = 0.45;
@@ -326,6 +424,22 @@ namespace effetopo.Views
             }
 
             RequestPickAndApplyStamp?.Invoke(this, EventArgs.Empty);
+        }
+
+        private void PickLines_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                var settings = BuildSettingsFromUi(validateStrict: true);
+                ModifyTopoSettingsService.Instance.Save(settings);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "Error", MessageBoxButton.OK, MessageBoxImage.Error);
+                return;
+            }
+
+            RequestPickAndApplyLines?.Invoke(this, EventArgs.Empty);
         }
 
         private void Apply_Click(object sender, RoutedEventArgs e) => ConfirmAndClose(applyOnly: true);
@@ -403,8 +517,48 @@ namespace effetopo.Views
                 SmoothIterations = ParseInt(SmoothIterationsBox.Text, "Smooth iterations", validateStrict),
                 SmoothStrength = SmoothStrengthSlider.Value,
                 CurvatureThreshold = ParseDouble(CurvatureThresholdBox.Text, "Curvature threshold", validateStrict, allowZero: true),
-                RemeshEntireSurface = RemeshEntireCheck.IsChecked == true
+                RemeshEntireSurface = RemeshEntireCheck.IsChecked == true,
+                LineSampleMode = LineCountModeOption.IsChecked == true
+                    ? BoundarySampleMode.BySegmentCount
+                    : BoundarySampleMode.ByDistance,
+                LineUseCustomSpacing = LineDistCustomOption.IsChecked == true,
+                LineDistancePresetIndex = LineDistCustomOption.IsChecked == true ? -1
+                    : LineDistPreset2.IsChecked == true ? 1
+                    : LineDistPreset3.IsChecked == true ? 2 : 0,
+                LineCustomSpacingDisplay = ParseLineCustomSpacing(validateStrict),
+                LineUseCustomSegmentCount = LineCountCustomOption.IsChecked == true,
+                LineSegmentPresetIndex = LineCountCustomOption.IsChecked == true ? -1
+                    : LineCountPreset2.IsChecked == true ? 1
+                    : LineCountPreset3.IsChecked == true ? 2 : 0,
+                LineCustomSegmentCount = ParseLineCustomSegmentCount(validateStrict)
             };
+        }
+
+        private double ParseLineCustomSpacing(bool validateStrict)
+        {
+            string raw = (LineDistCustomTextBox.Text ?? string.Empty).Trim().Replace(",", ".");
+            if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double value) || value <= 0)
+            {
+                if (!validateStrict || LineDistCustomOption.IsChecked != true)
+                    return _useMillimeters ? 300 : 1;
+                throw new InvalidOperationException(
+                    $"Please enter a positive custom spacing in {(_useMillimeters ? "mm" : "feet")}.");
+            }
+
+            return value;
+        }
+
+        private int ParseLineCustomSegmentCount(bool validateStrict)
+        {
+            string raw = (LineCountCustomTextBox.Text ?? string.Empty).Trim();
+            if (!int.TryParse(raw, NumberStyles.Integer, CultureInfo.InvariantCulture, out int value) || value < 1)
+            {
+                if (!validateStrict || LineCountCustomOption.IsChecked != true)
+                    return 10;
+                throw new InvalidOperationException("Please enter a whole number of segments (1 or greater).");
+            }
+
+            return value;
         }
 
         private double ParseDouble(string text, string fieldName, bool validateStrict, bool allowZero = false, bool allowNegative = false)

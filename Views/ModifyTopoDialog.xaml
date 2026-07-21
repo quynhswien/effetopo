@@ -48,33 +48,40 @@
                 </Grid.RowDefinitions>
 
                 <!-- Tool buttons -->
-                <UniformGrid Grid.Row="0" Rows="1" Columns="4" Margin="0,0,0,10">
-                    <ToggleButton x:Name="InflateToolBtn" Margin="4" Padding="8" Height="100"
+                <UniformGrid Grid.Row="0" Rows="1" Columns="5" Margin="0,0,0,10">
+                    <ToggleButton x:Name="InflateToolBtn" Margin="4" Padding="6" Height="96"
                                   Click="ToolButton_Click" Tag="InflateSurface">
                         <StackPanel HorizontalAlignment="Center">
-                            <TextBlock Text="⬆" FontSize="28" HorizontalAlignment="Center"/>
-                            <TextBlock Text="Inflate Surface" FontWeight="SemiBold" TextAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBlock Text="⬆" FontSize="24" HorizontalAlignment="Center"/>
+                            <TextBlock Text="Inflate Surface" FontWeight="SemiBold" TextAlignment="Center" FontSize="11" Margin="0,4,0,0"/>
                         </StackPanel>
                     </ToggleButton>
-                    <ToggleButton x:Name="MeshToolBtn" Margin="4" Padding="8" Height="100"
+                    <ToggleButton x:Name="MeshToolBtn" Margin="4" Padding="6" Height="96"
                                   Click="ToolButton_Click" Tag="MeshControl">
                         <StackPanel HorizontalAlignment="Center">
-                            <TextBlock Text="▦" FontSize="28" HorizontalAlignment="Center"/>
-                            <TextBlock Text="Mesh Control" FontWeight="SemiBold" TextAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBlock Text="▦" FontSize="24" HorizontalAlignment="Center"/>
+                            <TextBlock Text="Mesh Control" FontWeight="SemiBold" TextAlignment="Center" FontSize="11" Margin="0,4,0,0"/>
                         </StackPanel>
                     </ToggleButton>
-                    <ToggleButton x:Name="ShapeToolBtn" Margin="4" Padding="8" Height="100"
+                    <ToggleButton x:Name="ShapeToolBtn" Margin="4" Padding="6" Height="96"
                                   Click="ToolButton_Click" Tag="ShapeByPoint">
                         <StackPanel HorizontalAlignment="Center">
-                            <TextBlock Text="◎" FontSize="28" HorizontalAlignment="Center"/>
-                            <TextBlock Text="Shape by Point" FontWeight="SemiBold" TextAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBlock Text="◎" FontSize="24" HorizontalAlignment="Center"/>
+                            <TextBlock Text="Shape by Point" FontWeight="SemiBold" TextAlignment="Center" FontSize="11" Margin="0,4,0,0"/>
                         </StackPanel>
                     </ToggleButton>
-                    <ToggleButton x:Name="SmoothToolBtn" Margin="4" Padding="8" Height="100"
+                    <ToggleButton x:Name="ShapeLineToolBtn" Margin="4" Padding="6" Height="96"
+                                  Click="ToolButton_Click" Tag="ShapeByLine">
+                        <StackPanel HorizontalAlignment="Center">
+                            <TextBlock Text="╱" FontSize="24" HorizontalAlignment="Center"/>
+                            <TextBlock Text="Shape by Line" FontWeight="SemiBold" TextAlignment="Center" FontSize="11" Margin="0,4,0,0"/>
+                        </StackPanel>
+                    </ToggleButton>
+                    <ToggleButton x:Name="SmoothToolBtn" Margin="4" Padding="6" Height="96"
                                   Click="ToolButton_Click" Tag="SmoothGeometry">
                         <StackPanel HorizontalAlignment="Center">
-                            <TextBlock Text="∿" FontSize="28" HorizontalAlignment="Center"/>
-                            <TextBlock Text="Smooth Geometry" FontWeight="SemiBold" TextAlignment="Center" Margin="0,6,0,0"/>
+                            <TextBlock Text="∿" FontSize="24" HorizontalAlignment="Center"/>
+                            <TextBlock Text="Smooth Geometry" FontWeight="SemiBold" TextAlignment="Center" FontSize="11" Margin="0,4,0,0"/>
                         </StackPanel>
                     </ToggleButton>
                 </UniformGrid>
@@ -166,6 +173,51 @@
                                            Text="Bấm «Pick &amp; Preview Stamp» để vào chế độ chọn điểm: click nhiều lần trên topo, nhấn Esc để quay lại hộp thoại. Ok ghi thật vào Toposolid; Cancel bỏ draft."/>
                             </StackPanel>
 
+                            <!-- Shape by Line -->
+                            <StackPanel x:Name="ShapeLinePanel" Visibility="Collapsed">
+                                <TextBlock Text="Add and shape Toposolid control points along selected model lines or splines."
+                                           TextWrapping="Wrap" Foreground="#555" Margin="0,0,0,12"/>
+
+                                <RadioButton x:Name="LineDistanceModeOption" GroupName="LineSampleMode" IsChecked="True" Margin="0,0,0,8"
+                                             Content="By distance — spacing between points along each curve"/>
+                                <Border Margin="20,0,0,12" Padding="12" BorderBrush="#CCC" BorderThickness="1" CornerRadius="4">
+                                    <StackPanel x:Name="LineDistancePanel">
+                                        <RadioButton x:Name="LineDistPreset1" GroupName="LineDistanceOptions" IsChecked="True" Margin="0,4,0,0"/>
+                                        <RadioButton x:Name="LineDistPreset2" GroupName="LineDistanceOptions" Margin="0,6,0,0"/>
+                                        <RadioButton x:Name="LineDistPreset3" GroupName="LineDistanceOptions" Margin="0,6,0,0"/>
+                                        <StackPanel Margin="0,8,0,4">
+                                            <RadioButton x:Name="LineDistCustomOption" GroupName="LineDistanceOptions" Content="Custom spacing"/>
+                                            <DockPanel Margin="24,6,0,0" LastChildFill="False">
+                                                <TextBox x:Name="LineDistCustomTextBox" Width="180" Height="28" IsEnabled="False" VerticalContentAlignment="Center"/>
+                                                <TextBlock x:Name="LineDistUnitText" Margin="10,4,0,0" VerticalAlignment="Center"/>
+                                            </DockPanel>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <RadioButton x:Name="LineCountModeOption" GroupName="LineSampleMode" Margin="0,4,0,8"
+                                             Content="By number — equal segments per curve"/>
+                                <Border Margin="20,0,0,8" Padding="12" BorderBrush="#CCC" BorderThickness="1" CornerRadius="4">
+                                    <StackPanel x:Name="LineCountPanel" IsEnabled="False">
+                                        <TextBlock TextWrapping="Wrap" Foreground="#555" Margin="0,0,0,8"
+                                                   Text="Each curve is split into N equal segments (N + 1 sample positions, including endpoints)."/>
+                                        <RadioButton x:Name="LineCountPreset1" GroupName="LineCountOptions" IsChecked="True" Margin="0,4,0,0"/>
+                                        <RadioButton x:Name="LineCountPreset2" GroupName="LineCountOptions" Margin="0,6,0,0"/>
+                                        <RadioButton x:Name="LineCountPreset3" GroupName="LineCountOptions" Margin="0,6,0,0"/>
+                                        <StackPanel Margin="0,8,0,4">
+                                            <RadioButton x:Name="LineCountCustomOption" GroupName="LineCountOptions" Content="Custom segment count"/>
+                                            <DockPanel Margin="24,6,0,0" LastChildFill="False">
+                                                <TextBox x:Name="LineCountCustomTextBox" Width="180" Height="28" IsEnabled="False" VerticalContentAlignment="Center"/>
+                                                <TextBlock Margin="10,4,0,0" VerticalAlignment="Center" Text="segments"/>
+                                            </DockPanel>
+                                        </StackPanel>
+                                    </StackPanel>
+                                </Border>
+
+                                <TextBlock Margin="0,8,0,0" Foreground="#777" TextWrapping="Wrap"
+                                           Text="Bấm «Pick Lines» để chọn model line / spline. Điểm được thêm theo cao độ của line; Esc để quay lại hộp thoại."/>
+                            </StackPanel>
+
                             <!-- Smooth Geometry -->
                             <StackPanel x:Name="SmoothPanel" Visibility="Collapsed">
                                 <TextBlock Text="Remove sharp vertices and noise without changing overall design intent."
@@ -250,6 +302,9 @@
                 <Button x:Name="PickApplyBtn" Content="Pick &amp; Preview Stamp" Width="160" Height="32" Margin="0,0,8,0"
                         Visibility="Collapsed" Click="PickApply_Click"
                         ToolTip="Chọn điểm để thêm stamp vào draft (preview). Ok để ghi vào Toposolid."/>
+                <Button x:Name="PickLinesBtn" Content="Pick Lines" Width="120" Height="32" Margin="0,0,8,0"
+                        Visibility="Collapsed" Click="PickLines_Click"
+                        ToolTip="Chọn model line / spline để thêm điểm dọc theo line."/>
                 <Button x:Name="ApplyBtn" Content="Apply changes" Width="120" Height="32" Margin="0,0,8,0"
                         Click="Apply_Click"/>
                 <Button Content="Cancel" Width="90" Height="32" Margin="0,0,8,0" IsCancel="True" Click="Cancel_Click"/>

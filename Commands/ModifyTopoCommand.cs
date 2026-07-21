@@ -70,12 +70,15 @@ namespace effetopo.Commands
                         options = dialog.SelectedOptions;
                         closeAfter = dialog.CloseAfterAction;
 
-                        if (options.Tool == ModifyTopoTool.ShapeByPoint)
-                        {
-                            ModifyTopoResult commitResult = preview.CommitDraftIfPending();
-                            if (commitResult != null)
-                                currentCount = commitResult.PointsAfterModification;
-                        }
+                    if (options.Tool == ModifyTopoTool.ShapeByPoint)
+                    {
+                        ModifyTopoResult commitResult = preview.CommitDraftIfPending();
+                        if (commitResult != null)
+                            currentCount = commitResult.PointsAfterModification;
+                    }
+
+                    if (options.Tool == ModifyTopoTool.ShapeByLine)
+                        currentCount = topoService.CountSlabShapeVertices(toposolid);
                     }
 
                     savedSettings = settingsService.Load();
@@ -102,6 +105,23 @@ namespace effetopo.Commands
 
                         RevitNotificationHandler.ShowGeneralMessageDialog("Changes Applied",
                             $"Shape by Point committed.\nCurrent points: {currentCount}");
+                        continue;
+                    }
+
+                    if (options.Tool == ModifyTopoTool.ShapeByLine)
+                    {
+                        currentCount = topoService.CountSlabShapeVertices(toposolid);
+                        if (closeAfter)
+                        {
+                            string shapeDetail = $"Shape by Line complete.\n\n" +
+                                $"Original points: {originalCount}\n" +
+                                $"Current points: {currentCount}";
+                            RevitNotificationHandler.ShowGeneralMessageDialog("Modify Toposolid Complete", shapeDetail);
+                            break;
+                        }
+
+                        RevitNotificationHandler.ShowGeneralMessageDialog("Changes Applied",
+                            $"Shape by Line applied.\nCurrent points: {currentCount}");
                         continue;
                     }
 

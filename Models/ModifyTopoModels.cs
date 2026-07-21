@@ -1,3 +1,5 @@
+using System;
+
 namespace effetopo.Models
 {
     public enum ModifyTopoTool
@@ -5,6 +7,7 @@ namespace effetopo.Models
         InflateSurface,
         MeshControl,
         ShapeByPoint,
+        ShapeByLine,
         SmoothGeometry
     }
 
@@ -56,6 +59,11 @@ namespace effetopo.Models
         // Mesh Control
         public double CurvatureThreshold { get; set; } = 0.02; // ft vertical change per ft horizontal
         public bool RemeshEntireSurface { get; set; } = true;
+
+        // Shape by Line
+        public BoundarySampleMode LineSampleMode { get; set; } = BoundarySampleMode.ByDistance;
+        public double LineSpacingFeet { get; set; } = 1.0;
+        public int LineSegmentsPerCurve { get; set; } = 10;
     }
 
     /// <summary>Persisted UI settings for Modify Topo dialog.</summary>
@@ -86,6 +94,14 @@ namespace effetopo.Models
         public double CurvatureThreshold { get; set; } = 0.02;
         public bool RemeshEntireSurface { get; set; } = true;
 
+        public BoundarySampleMode LineSampleMode { get; set; } = BoundarySampleMode.ByDistance;
+        public bool LineUseCustomSpacing { get; set; }
+        public int LineDistancePresetIndex { get; set; }
+        public double LineCustomSpacingDisplay { get; set; } = 1.0;
+        public bool LineUseCustomSegmentCount { get; set; }
+        public int LineSegmentPresetIndex { get; set; } = 1;
+        public int LineCustomSegmentCount { get; set; } = 10;
+
         public ModifyTopoOptions ToOptions(bool useMillimeters)
         {
             double ToFeet(double display) => useMillimeters ? display / 304.8 : display;
@@ -111,8 +127,37 @@ namespace effetopo.Models
                 SmoothIterations = SmoothIterations,
                 SmoothStrength = SmoothStrength,
                 CurvatureThreshold = CurvatureThreshold,
-                RemeshEntireSurface = RemeshEntireSurface
+                RemeshEntireSurface = RemeshEntireSurface,
+                LineSampleMode = LineSampleMode,
+                LineSpacingFeet = ResolveLineSpacingFeet(useMillimeters),
+                LineSegmentsPerCurve = ResolveLineSegmentCount()
             };
+        }
+
+        private double ResolveLineSpacingFeet(bool useMillimeters)
+        {
+            if (LineUseCustomSpacing)
+            {
+                double display = LineCustomSpacingDisplay;
+                return useMillimeters ? display / 304.8 : display;
+            }
+
+            if (LineDistancePresetIndex == 1)
+                return useMillimeters ? 500.0 / 304.8 : 2.0;
+            if (LineDistancePresetIndex == 2)
+                return useMillimeters ? 1000.0 / 304.8 : 4.0;
+            return useMillimeters ? 300.0 / 304.8 : 1.0;
+        }
+
+        private int ResolveLineSegmentCount()
+        {
+            if (LineUseCustomSegmentCount)
+                return Math.Max(1, LineCustomSegmentCount);
+            if (LineSegmentPresetIndex == 2)
+                return 20;
+            if (LineSegmentPresetIndex == 1)
+                return 10;
+            return 5;
         }
     }
 

@@ -100,6 +100,8 @@ namespace effetopo.Services
                 case ModifyTopoTool.MeshControl:
                     MeshControl(doc, toposolid, editor, state, options);
                     break;
+                case ModifyTopoTool.ShapeByLine:
+                    throw new InvalidOperationException("Shape by Line requires a selected model curve.");
             }
 
             int modified = WriteVertexZChanges(editor, state);
@@ -249,6 +251,113 @@ namespace effetopo.Services
                 Log.Information("ModifyTopo (from preview mesh): {Summary}", result.Summary);
             return result;
         }
+
+        public ModifyTopoResult ApplyShapeByLine(
+            Document doc,
+            Toposolid toposolid,
+            Curve curve,
+            ModifyTopoOptions options)
+        {
+            if (doc == null) throw new ArgumentNullException(nameof(doc));
+            if (toposolid == null) throw new ArgumentNullException(nameof(toposolid));
+            if (curve == null) throw new ArgumentNullException(nameof(curve));
+            if (options == null) throw new ArgumentNullException(nameof(options));
+
+            var samplingOptions = new FloorBoundarySamplingOptions
+            {
+                Mode = options.LineSampleMode,
+                SpacingFeet = options.LineSpacingFeet,
+                SegmentsPerCurve = options.LineSegmentsPerCurve
+            };
+
+            List<XYZ> samplePoints = CurvePointSampler.Sample(curve, samplingOptions);
+            if (samplePoints.Count == 0)
+                throw new InvalidOperationException("No sample points could be generated along the selected line.");
+
+            SlabShapeEditor editor = toposolid.GetSlabShapeEditor();
+            if (editor == null)
+                throw new InvalidOperationException("Could not access SlabShapeEditor on Toposolid.");
+
+            editor.Enable();
+
+            var vertices = CollectVertices(doc, toposolid, editor);
+            int originalCount = vertices.Count;
+            if (originalCount == 0)
+                throw new InvalidOperationException("Toposolid has no SlabShape vertices to modify.");
+
+            double levelElev = GetLevelElevation(doc, toposolid);
+            double heightOffset = GetHeightOffsetFromLevel(toposolid);
+            var state = new SculptState(doc, toposolid, vertices, levelElev, heightOffset);
+
+            const double xyTol = 0.15;
+            var rawSnapshots = state.Vertices
+                .Select(v => new SculptVertexSnapshot { X = v.X, Y = v.Y, Z = v.Z })
+                .ToList();
+
+            foreach (XYZ point in samplePoints)
+            {
+                SculptVertex existing = state.Vertices
+                    .FirstOrDefault(v => HorizontalDistance(v.X, v.Y, point.X, point.Y) < xyTol);
+
+                if (existing != null)
+                {
+                    existing.Z = point.Z;
+                    continue;
+                }
+
+                double slabZ = state.ModelZToSlabOffset(point.Z);
+                if (!SlabShapeEditorHelper.TryAddPoint(editor, new XYZ(point.X, point.Y, slabZ)))
+                    continue;
+
+                doc.Regenerate();
+                SlabShapeVertex vertex = FindSlabShapeVertexNearXY(editor, point.X, point.Y, xyTol);
+                if (vertex == null)
+                    continue;
+
+                double modelZ = VertexZToModelZ(doc, toposolid, rawSnapshots, vertex.Position.Z);
+                state.PointsAdded++;
+                state.Vertices.Add(new SculptVertex
+                {
+                    RevitVertex = vertex,
+                    X = point.X,
+                    Y = point.Y,
+                    Z = point.Z,
+                    OriginalZ = modelZ
+                });
+                rawSnapshots.Add(new SculptVertexSnapshot { X = point.X, Y = point.Y, Z = point.Z });
+            }
+
+            if (state.PointsAdded > 0)
+            {
+                doc.Regenerate();
+                RefreshRevitVertices(editor, state);
+            }
+
+            int modified = WriteVertexZChanges(editor, state);
+            doc.Regenerate();
+            int afterCount = CountSlabShapeVertices(toposolid);
+
+            var result = new ModifyTopoResult
+            {
+                OriginalPointCount = originalCount,
+                PointsAfterModification = afterCount,
+                VerticesModified = modified,
+                PointsAdded = state.PointsAdded,
+                PointsRemoved = 0,
+                Summary = BuildSummary(
+                    new ModifyTopoOptions { Tool = ModifyTopoTool.ShapeByLine },
+                    modified,
+                    state.PointsAdded,
+                    0,
+                    afterCount)
+            };
+            LastResult = result;
+            Log.Information(
+                "Shape by Line: sampled {SampleCount} points, {Summary}",
+                samplePoints.Count,
+                result.Summary);
+            return result;
+        }
 #endif
 
         private static string BuildSummary(ModifyTopoOptions options, int modified, int added, int removed, int afterCount)
@@ -258,6 +367,7 @@ namespace effetopo.Services
                 ModifyTopoTool.InflateSurface => "Inflate Surface",
                 ModifyTopoTool.MeshControl => "Mesh Control",
                 ModifyTopoTool.ShapeByPoint => "Shape by Point",
+                ModifyTopoTool.ShapeByLine => "Shape by Line",
                 ModifyTopoTool.SmoothGeometry => "Smooth Geometry",
                 _ => "Modify Topo"
             };
