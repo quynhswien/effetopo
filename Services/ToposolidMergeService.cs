@@ -393,8 +393,71 @@ namespace effetopo.Services
                 double x, double y, double topoSurveyElevation,
                 double levelElevation, double heightOffsetFromLevel)
             {
-                double targetModelZ = SurveyElevationToModelZ(x, y, topoSurveyElevation);
-                return targetModelZ - levelElevation - heightOffsetFromLevel;
+                return SurveyElevationToFloorSlabOffset(
+                    x, y, topoSurveyElevation, levelElevation + heightOffsetFromLevel);
+            }
+
+            /// <summary>
+            /// Slab shape offset from the floor reference plane model Z so the vertex matches survey elevation.
+            /// </summary>
+            public double SurveyElevationToFloorSlabOffset(
+                double x, double y, double surveyElevationFt, double referencePlaneModelZ)
+            {
+                double targetModelZ = SurveyElevationToModelZ(x, y, surveyElevationFt);
+                return targetModelZ - referencePlaneModelZ;
+            }
+
+            /// <summary>Survey/shared elevation at model XY,Z (Elevation Base = Survey Point).</summary>
+            public double ModelZToSurveyElevationPublic(double x, double y, double modelZ) =>
+                ModelZToSurveyElevation(x, y, modelZ);
+        }
+
+        /// <summary>
+        /// Single Survey Point frame for Floor Follow Topo: read topo and write slab points through the same conversion.
+        /// </summary>
+        private sealed class FloorSurveyElevationContext
+        {
+            private readonly SurveyCoordinateHelper _survey;
+            private readonly double _referencePlaneModelZ;
+
+            public FloorSurveyElevationContext(Document doc, Floor floor, double? referencePlaneModelZ = null)
+            {
+                _survey = new SurveyCoordinateHelper(doc);
+                if (referencePlaneModelZ.HasValue)
+                {
+                    _referencePlaneModelZ = referencePlaneModelZ.Value;
+                    return;
+                }
+
+                Level level = floor?.LevelId != null && floor.LevelId != ElementId.InvalidElementId
+                    ? doc?.GetElement(floor.LevelId) as Level
+                    : null;
+                _referencePlaneModelZ = (level?.Elevation ?? 0) + GetFloorHeightOffsetFromLevel(floor);
+            }
+
+            public double ReferencePlaneModelZ => _referencePlaneModelZ;
+
+            public double SurveyElevationToModelZ(double x, double y, double surveyElevationFt)
+            {
+                if (_survey != null && _survey.IsAvailable)
+                    return _survey.SurveyElevationToModelZ(x, y, surveyElevationFt);
+                return surveyElevationFt;
+            }
+
+            /// <summary>SlabShapeEditor offset so the floor vertex shows <paramref name="surveyElevationFt"/> (Survey Point).</summary>
+            public double SurveyElevationToSlabOffset(double x, double y, double surveyElevationFt)
+            {
+                double targetModelZ = SurveyElevationToModelZ(x, y, surveyElevationFt);
+                return targetModelZ - _referencePlaneModelZ;
+            }
+
+            /// <summary>Survey Point elevation of a slab vertex at the given offset from the floor reference plane.</summary>
+            public double SlabOffsetToSurveyElevation(double x, double y, double slabOffsetFt)
+            {
+                double modelZ = _referencePlaneModelZ + slabOffsetFt;
+                if (_survey != null && _survey.IsAvailable)
+                    return _survey.ModelZToSurveyElevationPublic(x, y, modelZ);
+                return modelZ;
             }
         }
 
@@ -1779,8 +1842,8 @@ namespace effetopo.Services
         }
 
         /// <summary>
-        /// Makes a Floor follow a Toposolid surface: raycast floor/topo XY onto topo geometry mesh,
-        /// convert hit Z to Survey Point elevation, and apply as floor slab shape offset.
+        /// Makes a Floor follow a Toposolid surface: raycast onto topo mesh, read elevation in Survey Point
+        /// coordinates, and apply the same Survey Point elevation to every slab vertex (add or modify).
         /// </summary>
         public Floor FloorFollowToposolid(Document doc, Floor floor, 
 #if REVIT2024_OR_GREATER
@@ -1831,27 +1894,23 @@ namespace effetopo.Services
             Log.Information("Floor boundary: X[{MinX}, {MaxX}], Y[{MinY}, {MaxY}]",
                 floorMinX, floorMaxX, floorMinY, floorMaxY);
 
-            const double boundaryTolerance = 0.1; // 10cm tolerance for boundary check
             const double xyTolerance = 0.01; // 1cm tolerance for XY comparison
 
             SlabShapeEditor editor = floor.GetSlabShapeEditor();
             if (editor == null)
                 throw new InvalidOperationException("Could not get SlabShapeEditor from Floor");
 
-            Level floorLevel = (floor.LevelId != null && floor.LevelId != ElementId.InvalidElementId)
-                ? doc.GetElement(floor.LevelId) as Level
-                : null;
-            double levelElevation = floorLevel?.Elevation ?? 0;
-            double heightOffsetFromLevel = GetFloorHeightOffsetFromLevel(floor);
-            double floorDatumZ = levelElevation + heightOffsetFromLevel;
-            var surveyCoords = new SurveyCoordinateHelper(doc);
-            Log.Information(
-                $"Floor reference: level={levelElevation:F4} ft, height offset={heightOffsetFromLevel:F4} ft (unchanged); elevations matched in survey coordinates");
-
             editor = ResetAndPrepareFloorSlabShape(doc, floor, out bool slabShapeWasReset) ?? editor;
 
             // SlabShape vertices (after reset + Enable + Regenerate) – only real slab vertices use ModifySubElement
             var slabVertexPoints = ExtractSlabShapeVerticesFromFloor(floor, editor);
+            double referencePlaneModelZ = CalibrateFloorReferencePlaneModelZ(floor, slabVertexPoints);
+            var surveyContext = new FloorSurveyElevationContext(doc, floor, referencePlaneModelZ);
+            double floorDatumZ = surveyContext.ReferencePlaneModelZ;
+            var surveyCoords = new SurveyCoordinateHelper(doc);
+            Log.Information(
+                "Floor follow topo: Survey Point frame, reference plane model Z = {RefZ:F4} ft",
+                referencePlaneModelZ);
             var existingSlabVertexXY = new HashSet<string>();
             foreach (var p in slabVertexPoints)
             {
@@ -1941,10 +2000,11 @@ namespace effetopo.Services
                 double? sampleTopoSurvey = topoElevationProvider.GetTopSurfaceSurveyElevation(sample.X, sample.Y, this);
                 if (sampleTopoSurvey.HasValue)
                 {
-                    double sampleOffset = surveyCoords.SurveyElevationToFloorSlabOffset(
-                        sample.X, sample.Y, sampleTopoSurvey.Value, levelElevation, heightOffsetFromLevel);
+                    double sampleOffset = surveyContext.SurveyElevationToSlabOffset(
+                        sample.X, sample.Y, sampleTopoSurvey.Value);
                     Log.Information(
-                        $"Sample topo survey elev={sampleTopoSurvey.Value:F4} ft -> floor slab offset={sampleOffset:F4} ft");
+                        "Sample ({X:F2},{Y:F2}): topo survey={Survey:F4} ft -> slab offset={Offset:F4} ft (Survey Point)",
+                        sample.X, sample.Y, sampleTopoSurvey.Value, sampleOffset);
                 }
             }
 
@@ -2046,37 +2106,39 @@ namespace effetopo.Services
             
             // Toposolid interior points (optional): project each XY onto topo mesh top surface (survey elevation)
             var topoPointsToAddByXY = new Dictionary<string, PointUpdate>();
+            const double interiorEdgeInset = 0.15; // keep off sketch edge so Revit accepts AddPoint
             if (addInteriorTopoPoints)
             {
+                int skippedOutsideSketch = 0;
                 foreach (var topoPoint in topoPoints)
                 {
                     if (topoPoint == null) continue;
 
                     try
                     {
-                        if (topoPoint.X >= floorMinX - boundaryTolerance &&
-                            topoPoint.X <= floorMaxX + boundaryTolerance &&
-                            topoPoint.Y >= floorMinY - boundaryTolerance &&
-                            topoPoint.Y <= floorMaxY + boundaryTolerance)
+                        if (!IsPointInsideFloorSketch(floor, topoPoint.X, topoPoint.Y, interiorEdgeInset))
                         {
-                            string xyKey = GetXYKey(topoPoint, xyTolerance);
-                            if (floorXYMap.ContainsKey(xyKey))
-                                continue;
-
-                            double? topoSurveyZ = topoElevationProvider.GetTopSurfaceSurveyElevation(
-                                topoPoint.X, topoPoint.Y, this);
-                            if (!topoSurveyZ.HasValue) continue;
-
-                            var update = new PointUpdate
-                            {
-                                OriginalPoint = topoPoint,
-                                NewZ = topoSurveyZ.Value,
-                                IsNewPoint = true
-                            };
-                            if (!topoPointsToAddByXY.TryGetValue(xyKey, out PointUpdate existing)
-                                || topoSurveyZ.Value > existing.NewZ)
-                                topoPointsToAddByXY[xyKey] = update;
+                            skippedOutsideSketch++;
+                            continue;
                         }
+
+                        string xyKey = GetXYKey(topoPoint, xyTolerance);
+                        if (floorXYMap.ContainsKey(xyKey))
+                            continue;
+
+                        double? topoSurveyZ = topoElevationProvider.GetTopSurfaceSurveyElevation(
+                            topoPoint.X, topoPoint.Y, this);
+                        if (!topoSurveyZ.HasValue) continue;
+
+                        var update = new PointUpdate
+                        {
+                            OriginalPoint = topoPoint,
+                            NewZ = topoSurveyZ.Value,
+                            IsNewPoint = true
+                        };
+                        if (!topoPointsToAddByXY.TryGetValue(xyKey, out PointUpdate existing)
+                            || topoSurveyZ.Value > existing.NewZ)
+                            topoPointsToAddByXY[xyKey] = update;
                     }
                     catch (Exception ex)
                     {
@@ -2084,6 +2146,10 @@ namespace effetopo.Services
                             topoPoint.X, topoPoint.Y, topoPoint.Z);
                     }
                 }
+                if (skippedOutsideSketch > 0)
+                    Log.Information(
+                        "Skipped {Count} interior topo points outside floor sketch (or within {Inset:F2} ft of edge)",
+                        skippedOutsideSketch, interiorEdgeInset);
             }
 
             // STEP 2b: Sample entire boundary line and add points so toàn bộ đường boundary được chiếu theo topo
@@ -2177,23 +2243,39 @@ namespace effetopo.Services
                 var pointsSkippedByRevit = new List<PointUpdate>();
 
                 const double matchXYTolerance = 0.05; // ~1.5 cm to match (x,y) to SlabShapeVertex
+                const double newPointSnapTolerance = 0.02; // ~6 mm – avoid snapping new XY to unrelated vertices
+                const int regenerateEveryNPoints = 40;
 
                 var newPoints = pointsToApply.Where(p => p.IsNewPoint).ToList();
                 var existingVertices = pointsToApply.Where(p => p.IsSlabShapeVertex).ToList();
+                int addsSinceRegenerate = 0;
 
                 foreach (var pointUpdate in newPoints.Concat(existingVertices))
                 {
                     double x = pointUpdate.OriginalPoint.X;
                     double y = pointUpdate.OriginalPoint.Y;
                     double topoSurveyZ = pointUpdate.NewZ;
+                    bool isNew = pointUpdate.IsNewPoint;
 
                     if (ApplyTopoElevationAtXY(
-                        editor, x, y, topoSurveyZ, surveyCoords,
-                        levelElevation, heightOffsetFromLevel, matchXYTolerance))
+                        editor, x, y, topoSurveyZ, surveyContext,
+                        isNew ? newPointSnapTolerance : matchXYTolerance,
+                        preferAddNewPoint: isNew))
                     {
                         pointsApplied++;
                         pointsModified++;
                         appliedPointsWithZ.Add((x, y, topoSurveyZ));
+                        if (isNew)
+                        {
+                            addsSinceRegenerate++;
+                            if (addsSinceRegenerate >= regenerateEveryNPoints)
+                            {
+                                doc.Regenerate();
+                                editor = floor.GetSlabShapeEditor() ?? editor;
+                                EnsureSlabShapeEditingEnabled(editor);
+                                addsSinceRegenerate = 0;
+                            }
+                        }
                     }
                     else
                     {
@@ -2206,8 +2288,7 @@ namespace effetopo.Services
 
                 // Corner pass: sketch junction points are implicit boundary vertices – not in SlabShapeVertices until modified via DrawPoint/ModifySubElement
                 int cornersModified = ApplySketchCornerElevations(
-                    doc, floor, editor, sketchCornerUpdates, surveyCoords,
-                    levelElevation, heightOffsetFromLevel);
+                    doc, floor, editor, sketchCornerUpdates, surveyContext);
                 pointsModified += cornersModified;
                 pointsApplied += cornersModified;
 
@@ -2228,8 +2309,8 @@ namespace effetopo.Services
                     if (nearest.Count < 2) continue;
                     double avgSurveyZ = (nearest[0].p.Z + nearest[1].p.Z) * 0.5;
                     if (ApplyTopoElevationAtXY(
-                        editor, x, y, avgSurveyZ, surveyCoords,
-                        levelElevation, heightOffsetFromLevel, matchXYTolerance))
+                        editor, x, y, avgSurveyZ, surveyContext, matchXYTolerance,
+                        preferAddNewPoint: true))
                     {
                         pointsAdjustedByAverage++;
                     }
@@ -2259,9 +2340,8 @@ namespace effetopo.Services
                         try
                         {
                             double meanSurveyZ = kv.Value.sumZ / kv.Value.count;
-                            double slabOffset = TopoSurveyElevationToSlabOffset(
-                                surveyCoords, kv.Value.x, kv.Value.y, meanSurveyZ,
-                                levelElevation, heightOffsetFromLevel);
+                            double slabOffset = surveyContext.SurveyElevationToSlabOffset(
+                                kv.Value.x, kv.Value.y, meanSurveyZ);
                             editor.ModifySubElement(kv.Key, slabOffset);
                             pointsAdjustedByAverage++;
                         }
@@ -2505,6 +2585,131 @@ namespace effetopo.Services
         }
 
         /// <summary>
+        /// Uses measured slab vertex model Z after reset when it disagrees with level + height offset.
+        /// </summary>
+        private static double CalibrateFloorReferencePlaneModelZ(Floor floor, IList<XYZ> slabVertexPoints)
+        {
+            Level level = floor?.LevelId != null && floor.LevelId != ElementId.InvalidElementId
+                ? floor.Document.GetElement(floor.LevelId) as Level
+                : null;
+            double fromParams = (level?.Elevation ?? 0) + GetFloorHeightOffsetFromLevel(floor);
+            if (slabVertexPoints == null || slabVertexPoints.Count == 0)
+                return fromParams;
+
+            double sum = 0;
+            int count = 0;
+            foreach (XYZ p in slabVertexPoints)
+            {
+                if (p == null) continue;
+                sum += p.Z;
+                count++;
+            }
+            if (count == 0) return fromParams;
+
+            double measured = sum / count;
+            if (Math.Abs(measured - fromParams) > 0.02)
+            {
+                Log.Information(
+                    "Reference plane from slab vertices: {Measured:F4} ft (param-based was {Param:F4} ft)",
+                    measured, fromParams);
+            }
+            return measured;
+        }
+
+        private static bool IsPointInsideFloorSketch(Floor floor, double x, double y, double edgeInsetFeet = 0)
+        {
+            if (floor == null) return true;
+            try
+            {
+                Sketch sketch = floor.Document.GetElement(floor.SketchId) as Sketch;
+                if (sketch?.Profile == null || sketch.Profile.Size == 0)
+                    return true;
+
+                bool insideOuter = false;
+                for (int loopIndex = 0; loopIndex < sketch.Profile.Size; loopIndex++)
+                {
+                    CurveArray curves = sketch.Profile.get_Item(loopIndex);
+                    if (curves == null) continue;
+
+                    var polygon = TessellateProfileLoop(curves);
+                    if (polygon.Count < 3) continue;
+
+                    bool inside = IsPointInPolygonXY(x, y, polygon);
+                    if (loopIndex == 0)
+                        insideOuter = inside;
+                    else if (inside)
+                        return false;
+                }
+
+                if (!insideOuter) return false;
+                if (edgeInsetFeet <= 0) return true;
+                return GetDistanceToFloorSketchBoundary(floor, x, y) >= edgeInsetFeet;
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Could not test point in floor sketch: {Error}", ex.Message);
+                return true;
+            }
+        }
+
+        private static List<XYZ> TessellateProfileLoop(CurveArray curves)
+        {
+            var polygon = new List<XYZ>();
+            if (curves == null) return polygon;
+            foreach (Curve curve in curves)
+            {
+                if (curve == null) continue;
+                IList<XYZ> tess = curve.Tessellate();
+                if (tess == null || tess.Count == 0) continue;
+                int start = polygon.Count > 0 ? 1 : 0;
+                for (int i = start; i < tess.Count; i++)
+                    polygon.Add(tess[i]);
+            }
+            return polygon;
+        }
+
+        private static bool IsPointInPolygonXY(double x, double y, IList<XYZ> polygon)
+        {
+            if (polygon == null || polygon.Count < 3) return false;
+            bool inside = false;
+            int n = polygon.Count;
+            for (int i = 0, j = n - 1; i < n; j = i++)
+            {
+                double xi = polygon[i].X, yi = polygon[i].Y;
+                double xj = polygon[j].X, yj = polygon[j].Y;
+                if (((yi > y) != (yj > y)) &&
+                    (x < (xj - xi) * (y - yi) / (yj - yi + 1e-12) + xi))
+                    inside = !inside;
+            }
+            return inside;
+        }
+
+        private static double GetDistanceToFloorSketchBoundary(Floor floor, double x, double y)
+        {
+            double minDist = double.MaxValue;
+            try
+            {
+                Sketch sketch = floor.Document.GetElement(floor.SketchId) as Sketch;
+                if (sketch?.Profile == null) return minDist;
+                var probe = new XYZ(x, y, 0);
+                for (int i = 0; i < sketch.Profile.Size; i++)
+                {
+                    CurveArray curves = sketch.Profile.get_Item(i);
+                    if (curves == null) continue;
+                    foreach (Curve curve in curves)
+                    {
+                        if (curve == null) continue;
+                        IntersectionResult proj = curve.Project(probe);
+                        if (proj != null)
+                            minDist = Math.Min(minDist, proj.Distance);
+                    }
+                }
+            }
+            catch { }
+            return minDist;
+        }
+
+        /// <summary>
         /// Clears prior slab shape edits, regenerates, and re-enables editing so the next run starts from a flat default shape.
         /// ResetSlabShape disables editing; Regenerate + Enable are required before reading vertices or applying new points.
         /// </summary>
@@ -2560,40 +2765,32 @@ namespace effetopo.Services
         }
 
         /// <summary>
-        /// Converts topo survey elevation to SlabShapeEditor offset (level and height offset unchanged).
-        /// </summary>
-        private static double TopoSurveyElevationToSlabOffset(
-            SurveyCoordinateHelper surveyCoords, double x, double y, double topoSurveyElevation,
-            double levelElevation, double heightOffsetFromLevel)
-        {
-            if (surveyCoords != null && surveyCoords.IsAvailable)
-                return surveyCoords.SurveyElevationToFloorSlabOffset(
-                    x, y, topoSurveyElevation, levelElevation, heightOffsetFromLevel);
-            return topoSurveyElevation - levelElevation - heightOffsetFromLevel;
-        }
-
-        /// <summary>
-        /// Adds or updates a slab point at (x,y) to topo survey elevation (Elevation Base = Survey Point).
+        /// Adds or updates a slab point at (x,y) to the given Survey Point elevation.
         /// </summary>
         private static bool ApplyTopoElevationAtXY(
-            SlabShapeEditor editor, double x, double y, double topoSurveyElevation,
-            SurveyCoordinateHelper surveyCoords,
-            double levelElevation, double heightOffsetFromLevel, double matchTolerance = 0.05)
+            SlabShapeEditor editor, double x, double y, double surveyElevationFt,
+            FloorSurveyElevationContext surveyContext, double matchTolerance = 0.05,
+            bool preferAddNewPoint = false)
         {
-            if (editor == null) return false;
+            if (editor == null || surveyContext == null) return false;
 
-            SlabShapeVertex vertex = FindSlabShapeVertexNearXY(editor, x, y, matchTolerance);
+            SlabShapeVertex vertex = null;
+            if (!preferAddNewPoint)
+                vertex = FindSlabShapeVertexNearXY(editor, x, y, matchTolerance);
+            else
+                vertex = FindSlabShapeVertexAtXY(
+                    CollectSlabShapeVertices(editor), x, y, matchTolerance, matchTolerance);
+
             if (vertex != null)
                 return TryModifySlabVertexElevation(
-                    editor, vertex, topoSurveyElevation, surveyCoords, x, y,
-                    levelElevation, heightOffsetFromLevel);
+                    editor, vertex, surveyElevationFt, surveyContext, x, y);
 
-            double slabOffset = TopoSurveyElevationToSlabOffset(
-                surveyCoords, x, y, topoSurveyElevation, levelElevation, heightOffsetFromLevel);
-            if (!SlabShapeEditorHelper.TryAddPoint(editor, new XYZ(x, y, slabOffset)))
+            double slabOffset = surveyContext.SurveyElevationToSlabOffset(x, y, surveyElevationFt);
+            if (!TryAddFloorSlabPoint(editor, x, y, slabOffset))
                 return false;
 
-            vertex = FindSlabShapeVertexNearXY(editor, x, y, matchTolerance);
+            vertex = FindSlabShapeVertexAtXY(
+                CollectSlabShapeVertices(editor), x, y, matchTolerance, matchTolerance * 2);
             if (vertex == null)
             {
                 Log.Debug("AddPoint succeeded but no vertex found near ({X}, {Y})", x, y);
@@ -2601,20 +2798,25 @@ namespace effetopo.Services
             }
 
             return TryModifySlabVertexElevation(
-                editor, vertex, topoSurveyElevation, surveyCoords, x, y,
-                levelElevation, heightOffsetFromLevel);
+                editor, vertex, surveyElevationFt, surveyContext, x, y);
+        }
+
+        private static bool TryAddFloorSlabPoint(SlabShapeEditor editor, double x, double y, double slabOffset)
+        {
+            if (editor == null) return false;
+            if (SlabShapeEditorHelper.TryAddPoint(editor, new XYZ(x, y, slabOffset)))
+                return true;
+            return TryDrawPointOnSlab(editor, x, y, slabOffset);
         }
 
         private static bool TryModifySlabVertexElevation(
-            SlabShapeEditor editor, SlabShapeVertex vertex, double topoSurveyElevation,
-            SurveyCoordinateHelper surveyCoords, double x, double y,
-            double levelElevation, double heightOffsetFromLevel)
+            SlabShapeEditor editor, SlabShapeVertex vertex, double surveyElevationFt,
+            FloorSurveyElevationContext surveyContext, double x, double y)
         {
-            if (editor == null || vertex == null) return false;
+            if (editor == null || vertex == null || surveyContext == null) return false;
             try
             {
-                double slabOffset = TopoSurveyElevationToSlabOffset(
-                    surveyCoords, x, y, topoSurveyElevation, levelElevation, heightOffsetFromLevel);
+                double slabOffset = surveyContext.SurveyElevationToSlabOffset(x, y, surveyElevationFt);
                 editor.ModifySubElement(vertex, slabOffset);
                 return true;
             }
@@ -2652,10 +2854,9 @@ namespace effetopo.Services
         private int ApplySketchCornerElevations(
             Document doc, Floor floor, SlabShapeEditor editor,
             IList<(XYZ Corner, double TopoSurveyZ)> cornerUpdates,
-            SurveyCoordinateHelper surveyCoords,
-            double levelElevation, double heightOffsetFromLevel)
+            FloorSurveyElevationContext surveyContext)
         {
-            if (cornerUpdates == null || cornerUpdates.Count == 0) return 0;
+            if (cornerUpdates == null || cornerUpdates.Count == 0 || surveyContext == null) return 0;
 
             doc.Regenerate();
             editor = floor.GetSlabShapeEditor() ?? editor;
@@ -2680,29 +2881,25 @@ namespace effetopo.Services
                 SlabShapeVertex vertex = FindSlabShapeVertexAtXY(vertices, cx, cy, exactCornerTol);
                 if (vertex != null)
                     done = TryModifySlabVertexElevation(
-                        editor, vertex, topoSurveyZ, surveyCoords, cx, cy,
-                        levelElevation, heightOffsetFromLevel);
+                        editor, vertex, topoSurveyZ, surveyContext, cx, cy);
 
                 if (!done)
                 {
-                    double slabOffset = TopoSurveyElevationToSlabOffset(
-                        surveyCoords, cx, cy, topoSurveyZ, levelElevation, heightOffsetFromLevel);
+                    double slabOffset = surveyContext.SurveyElevationToSlabOffset(cx, cy, topoSurveyZ);
                     if (TryDrawPointOnSlab(editor, cx, cy, slabOffset))
                     {
                         vertices = CollectSlabShapeVertices(editor);
                         vertex = FindSlabShapeVertexAtXY(vertices, cx, cy, exactCornerTol, nearCornerTol);
                         if (vertex != null)
                             done = TryModifySlabVertexElevation(
-                                editor, vertex, topoSurveyZ, surveyCoords, cx, cy,
-                                levelElevation, heightOffsetFromLevel);
+                                editor, vertex, topoSurveyZ, surveyContext, cx, cy);
                     }
                 }
 
                 if (!done)
                 {
                     if (ApplyTopoElevationAtXY(
-                        editor, cx, cy, topoSurveyZ, surveyCoords,
-                        levelElevation, heightOffsetFromLevel, exactCornerTol))
+                        editor, cx, cy, topoSurveyZ, surveyContext, exactCornerTol))
                         done = true;
                 }
 
@@ -2712,14 +2909,12 @@ namespace effetopo.Services
                     vertex = FindSlabShapeVertexAtXY(vertices, cx, cy, exactCornerTol, nearCornerTol);
                     if (vertex != null)
                         done = TryModifySlabVertexElevation(
-                            editor, vertex, topoSurveyZ, surveyCoords, cx, cy,
-                            levelElevation, heightOffsetFromLevel);
+                            editor, vertex, topoSurveyZ, surveyContext, cx, cy);
                 }
 
                 if (!done)
                     done = TryPinCornerViaEdgeOffsets(
-                        floor, editor, corner, topoSurveyZ, surveyCoords, edgePinOffset,
-                        levelElevation, heightOffsetFromLevel);
+                        floor, editor, corner, topoSurveyZ, surveyContext, edgePinOffset);
 
                 if (!done)
                 {
@@ -2727,8 +2922,7 @@ namespace effetopo.Services
                     vertex = FindSlabShapeVertexAtXY(vertices, cx, cy, exactCornerTol, nearCornerTol);
                     if (vertex != null)
                         done = TryModifySlabVertexElevation(
-                            editor, vertex, topoSurveyZ, surveyCoords, cx, cy,
-                            levelElevation, heightOffsetFromLevel);
+                            editor, vertex, topoSurveyZ, surveyContext, cx, cy);
                 }
 
                 if (done)
@@ -2754,10 +2948,9 @@ namespace effetopo.Services
         /// </summary>
         private bool TryPinCornerViaEdgeOffsets(
             Floor floor, SlabShapeEditor editor, XYZ corner, double topoSurveyZ,
-            SurveyCoordinateHelper surveyCoords, double offsetFeet,
-            double levelElevation, double heightOffsetFromLevel)
+            FloorSurveyElevationContext surveyContext, double offsetFeet)
         {
-            if (editor == null || corner == null || offsetFeet <= 0) return false;
+            if (editor == null || corner == null || offsetFeet <= 0 || surveyContext == null) return false;
 
             var dirs = GetCornerEdgeOutwardDirections(floor, corner);
             if (dirs.Count == 0) return false;
@@ -2768,8 +2961,7 @@ namespace effetopo.Services
                 if (dir == null || dir.GetLength() < 1e-9) continue;
                 XYZ pt = corner + dir.Multiply(offsetFeet);
                 if (ApplyTopoElevationAtXY(
-                    editor, pt.X, pt.Y, topoSurveyZ, surveyCoords,
-                    levelElevation, heightOffsetFromLevel))
+                    editor, pt.X, pt.Y, topoSurveyZ, surveyContext, preferAddNewPoint: true))
                     anyAdded = true;
             }
             return anyAdded;
