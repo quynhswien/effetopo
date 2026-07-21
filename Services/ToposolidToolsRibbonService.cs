@@ -22,6 +22,7 @@ namespace effetopo.Services
             [MergeProposalToposolidCommand.COMMAND_NAME] = typeof(MergeProposalToposolidCommand),
             [FloorFollowTopoCommand.COMMAND_NAME] = typeof(FloorFollowTopoCommand),
             [ModifyTopoCommand.COMMAND_NAME] = typeof(ModifyTopoCommand),
+            [SetElevationCommand.COMMAND_NAME] = typeof(SetElevationCommand),
         };
 
         private static ToposolidToolsRibbonService _instance;
@@ -183,7 +184,12 @@ namespace effetopo.Services
                     ModifyTopoCommand.COMMAND_NAME,
                     "Modify\nTopo",
                     "Modify Toposolid\nSculpt surface: inflate, mesh control, shape by point, smooth",
-                    isFloorCommand: false)
+                    isFloorCommand: false),
+                new ToposolidToolDefinition(
+                    SetElevationCommand.COMMAND_NAME,
+                    "Set\nElevation",
+                    "Set Elevation\nAssign elevations to model lines and splines with optional labels",
+                    isFloorCommand: true)
             };
         }
 

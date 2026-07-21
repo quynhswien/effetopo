@@ -1,0 +1,71 @@
+<Window
+    x:Class="effetopo.Views.SetElevationDialog"
+    xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+    xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+    ResizeMode="CanResizeWithGrip"
+    WindowStartupLocation="CenterScreen"
+    Title="Set Elevation"
+    Height="520"
+    Width="520"
+    MinHeight="480"
+    MinWidth="460">
+    <Grid Margin="16">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <TextBlock Grid.Row="0" FontSize="18" FontWeight="SemiBold" Text="Set Elevation"/>
+        <TextBlock Grid.Row="0" Margin="0,28,0,16" TextWrapping="Wrap" Foreground="#555"
+                   Text="Assign elevations to model lines and splines. The first selected curve uses Start Elevation; each next curve adds Increment."/>
+
+        <StackPanel Grid.Row="1">
+            <CheckBox x:Name="AddLabelCheckBox" Margin="0,0,0,12" Content="Add Label"
+                      Checked="AddLabelCheckBox_Changed" Unchecked="AddLabelCheckBox_Changed"/>
+
+            <DockPanel Margin="0,0,0,12" LastChildFill="True">
+                <TextBlock Width="130" VerticalAlignment="Center" Text="Text Type"/>
+                <ComboBox x:Name="TextTypeCombo" Height="28" IsEnabled="False"
+                          DisplayMemberPath="Name" SelectedValuePath="Id"/>
+            </DockPanel>
+
+            <DockPanel Margin="0,0,0,12" LastChildFill="True">
+                <TextBlock Width="130" VerticalAlignment="Center" Text="Start Elevation"/>
+                <TextBox x:Name="StartElevationTextBox" Height="28" VerticalContentAlignment="Center" Text="0"/>
+                <TextBlock x:Name="LengthUnitText" Width="40" Margin="8,0,0,0" VerticalAlignment="Center"/>
+            </DockPanel>
+
+            <DockPanel Margin="0,0,0,12" LastChildFill="True">
+                <TextBlock Width="130" VerticalAlignment="Center" Text="Increment"/>
+                <TextBox x:Name="IncrementTextBox" Height="28" VerticalContentAlignment="Center" Text="1"/>
+                <TextBlock x:Name="IncrementUnitText" Width="40" Margin="8,0,0,0" VerticalAlignment="Center"/>
+            </DockPanel>
+
+            <DockPanel Margin="0,0,0,12" LastChildFill="True">
+                <TextBlock Width="130" VerticalAlignment="Center" Text="Elevation Base"/>
+                <ComboBox x:Name="ElevationBaseCombo" Height="28"/>
+            </DockPanel>
+
+            <DockPanel Margin="0,0,0,4" LastChildFill="True">
+                <TextBlock Width="130" VerticalAlignment="Center" Text="Override Color"/>
+                <ComboBox x:Name="OverrideColorCombo" Height="28" SelectionChanged="OverrideColorCombo_SelectionChanged">
+                    <ComboBox.ItemTemplate>
+                        <DataTemplate>
+                            <StackPanel Orientation="Horizontal">
+                                <Border Width="16" Height="16" Margin="0,0,8,0" BorderBrush="#AAA" BorderThickness="1"
+                                        Background="{Binding Brush}"/>
+                                <TextBlock VerticalAlignment="Center" Text="{Binding Name}"/>
+                            </StackPanel>
+                        </DataTemplate>
+                    </ComboBox.ItemTemplate>
+                </ComboBox>
+            </DockPanel>
+        </StackPanel>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Width="90" Margin="0,0,10,0" IsDefault="True" Click="Ok_Click">OK</Button>
+            <Button Width="90" IsCancel="True" Click="Cancel_Click">Cancel</Button>
+        </StackPanel>
+    </Grid>
+</Window>
