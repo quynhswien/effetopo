@@ -346,13 +346,33 @@ namespace effetopo.Services
                 return;
 
             _pickInProgress = true;
-            int batchesThisSession = 0;
             int totalLinesThisSession = 0;
             bool usePreview = options.ShowPreview;
+            var pickedThisSession = new HashSet<ElementId>();
+            var filter = new ModelCurveSelectionFilter();
 
             try
             {
                 _dialog.Hide();
+
+                try
+                {
+                    ICollection<Element> windowPicked = _uidoc.Selection.PickElementsByRectangle(
+                        filter,
+                        "Kéo cửa sổ chọn nhiều line, hoặc Esc để click từng line (Tab chuyển highlight).");
+
+                    var windowIds = windowPicked
+                        .Select(element => element?.Id)
+                        .Where(id => id != null && id != ElementId.InvalidElementId)
+                        .ToList();
+
+                    totalLinesThisSession += StagePickedLines(
+                        windowIds, options, usePreview, pickedThisSession);
+                }
+                catch (Autodesk.Revit.Exceptions.OperationCanceledException)
+                {
+                    // User skipped window select — continue to click pick.
+                }
 
                 while (true)
                 {
@@ -363,42 +383,16 @@ namespace effetopo.Services
 
                     try
                     {
-                        string prompt = batchesThisSession == 0
-                            ? "Chọn model line / spline. Kéo cửa sổ hoặc click nhiều line (Tab chuyển highlight). Esc khi xong."
-                            : $"Đã xử lý {batchesThisSession} lần ({totalLinesThisSession} line) — chọn tiếp hoặc Esc để quay lại.";
+                        string prompt = totalLinesThisSession == 0
+                            ? "Click model line / spline (Tab chuyển highlight). Esc khi xong."
+                            : $"Đã chọn {totalLinesThisSession} line — click thêm hoặc Esc quay lại hộp thoại.";
 
-                        IList<ElementId> lineIds = ModelCurveChainPicker.PickMultipleModelCurves(
-                            _uidoc,
-                            new ModelCurveSelectionFilter(),
-                            prompt);
-
-                        if (lineIds == null || lineIds.Count == 0)
-                            continue;
-
-                        if (usePreview)
-                        {
-                            ModifyTopoDraftStampResult staged = _lineDraftSession.StageCurves(lineIds, options);
-                            batchesThisSession++;
-                            totalLinesThisSession += lineIds.Count;
-                            UpdateLineDraftUi();
-                            RefreshLineDraftPreview();
-
-                            SetStatus(
-                                $"Lần {batchesThisSession}: +{staged.PointsAdded} điểm preview " +
-                                $"({lineIds.Count} line, tổng {_lineDraftSession.LineCount} line). Ok để ghi.");
-                        }
-                        else
-                        {
-                            ModifyTopoResult result = ApplyCurvesImmediate(lineIds, options);
-                            batchesThisSession++;
-                            totalLinesThisSession += lineIds.Count;
-                            _dialog.UpdatePointCounts(
-                                result.OriginalPointCount,
-                                result.PointsAfterModification);
-                            SetStatus(
-                                $"Lần {batchesThisSession}: +{result.PointsAdded} điểm, " +
-                                $"{result.VerticesModified} cập nhật ({lineIds.Count} line). Esc để quay lại.");
-                        }
+                        Reference reference = _uidoc.Selection.PickObject(ObjectType.Element, filter, prompt);
+                        totalLinesThisSession += StagePickedLines(
+                            new[] { reference.ElementId },
+                            options,
+                            usePreview,
+                            pickedThisSession);
                     }
                     catch (Autodesk.Revit.Exceptions.OperationCanceledException)
                     {
@@ -406,7 +400,7 @@ namespace effetopo.Services
                     }
                 }
 
-                if (batchesThisSession > 0)
+                if (totalLinesThisSession > 0)
                 {
                     if (usePreview)
                         SetStatus(
@@ -427,8 +421,58 @@ namespace effetopo.Services
                 _dialog.Show();
                 _dialog.Activate();
                 _pickInProgress = false;
+                RefreshLineDraftPreview();
                 try { _uidoc.RefreshActiveView(); } catch { }
             }
+        }
+
+        private int StagePickedLines(
+            IList<ElementId> lineIds,
+            ModifyTopoOptions options,
+            bool usePreview,
+            ISet<ElementId> pickedThisSession)
+        {
+            if (lineIds == null || lineIds.Count == 0 || options == null || pickedThisSession == null)
+                return 0;
+
+            var newIds = new List<ElementId>();
+            foreach (ElementId id in lineIds)
+            {
+                if (id == null || id == ElementId.InvalidElementId)
+                    continue;
+                if (usePreview && _lineDraftSession.ContainsCurve(id))
+                    continue;
+                if (!pickedThisSession.Add(id))
+                    continue;
+
+                newIds.Add(id);
+            }
+
+            if (newIds.Count == 0)
+                return 0;
+
+            if (usePreview)
+            {
+                ModifyTopoDraftStampResult staged = _lineDraftSession.StageCurves(newIds, options);
+                UpdateLineDraftUi();
+                RefreshLineDraftPreview();
+
+                SetStatus(
+                    $"Đã chọn {_lineDraftSession.LineCount} line (+{staged.PointsAdded} điểm preview). " +
+                    "Click thêm hoặc Esc quay lại hộp thoại.");
+            }
+            else
+            {
+                ModifyTopoResult result = ApplyCurvesImmediate(newIds, options);
+                _dialog.UpdatePointCounts(
+                    result.OriginalPointCount,
+                    result.PointsAfterModification);
+                SetStatus(
+                    $"Đã áp dụng {pickedThisSession.Count} line (+{result.PointsAdded} điểm). " +
+                    "Click thêm hoặc Esc quay lại hộp thoại.");
+            }
+
+            return newIds.Count;
         }
 
         private ModifyTopoResult ApplyCurvesImmediate(IList<ElementId> curveIds, ModifyTopoOptions options)

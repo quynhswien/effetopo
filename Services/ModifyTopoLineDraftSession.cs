@@ -36,6 +36,11 @@ namespace effetopo.Services
         public int DraftPointCount => _lastCalculated?.Vertices?.Count ?? _baseVertices.Count;
         public int LineCount => _lines.Count;
         public bool HasPendingChanges => _lines.Count > 0;
+
+        public bool ContainsCurve(ElementId curveId) =>
+            curveId != null &&
+            curveId != ElementId.InvalidElementId &&
+            _lines.Any(line => line.CurveElementId == curveId);
         public TerrainModifier.CalculateResult LastCalculated => _lastCalculated;
 
         public ModifyTopoDraftStampResult StageCurves(IEnumerable<ElementId> curveIds, ModifyTopoOptions options)
