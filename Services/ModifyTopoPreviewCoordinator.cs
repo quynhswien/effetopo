@@ -346,7 +346,7 @@ namespace effetopo.Services
                 return;
 
             _pickInProgress = true;
-            int chainsThisSession = 0;
+            int batchesThisSession = 0;
             int totalLinesThisSession = 0;
             bool usePreview = options.ShowPreview;
 
@@ -363,42 +363,41 @@ namespace effetopo.Services
 
                     try
                     {
-                        string prompt = chainsThisSession == 0
-                            ? "Chọn model line / spline. Tab để mở rộng chuỗi line liên tiếp. Esc khi xong."
-                            : $"Đã xử lý {chainsThisSession} chuỗi ({totalLinesThisSession} line) — chọn tiếp hoặc Esc để quay lại.";
+                        string prompt = batchesThisSession == 0
+                            ? "Chọn model line / spline. Kéo cửa sổ hoặc click nhiều line (Tab chuyển highlight). Esc khi xong."
+                            : $"Đã xử lý {batchesThisSession} lần ({totalLinesThisSession} line) — chọn tiếp hoặc Esc để quay lại.";
 
-                        IList<ElementId> chainIds = ModelCurveChainPicker.PickCurveChainWithTab(
-                            _uiApp,
+                        IList<ElementId> lineIds = ModelCurveChainPicker.PickMultipleModelCurves(
                             _uidoc,
                             new ModelCurveSelectionFilter(),
                             prompt);
 
-                        if (chainIds == null || chainIds.Count == 0)
+                        if (lineIds == null || lineIds.Count == 0)
                             continue;
 
                         if (usePreview)
                         {
-                            ModifyTopoDraftStampResult staged = _lineDraftSession.StageCurves(chainIds, options);
-                            chainsThisSession++;
-                            totalLinesThisSession += chainIds.Count;
+                            ModifyTopoDraftStampResult staged = _lineDraftSession.StageCurves(lineIds, options);
+                            batchesThisSession++;
+                            totalLinesThisSession += lineIds.Count;
                             UpdateLineDraftUi();
                             RefreshLineDraftPreview();
 
                             SetStatus(
-                                $"Chuỗi {chainsThisSession}: +{staged.PointsAdded} điểm preview " +
-                                $"({chainIds.Count} line, tổng {_lineDraftSession.LineCount} line). Ok để ghi.");
+                                $"Lần {batchesThisSession}: +{staged.PointsAdded} điểm preview " +
+                                $"({lineIds.Count} line, tổng {_lineDraftSession.LineCount} line). Ok để ghi.");
                         }
                         else
                         {
-                            ModifyTopoResult result = ApplyCurvesImmediate(chainIds, options);
-                            chainsThisSession++;
-                            totalLinesThisSession += chainIds.Count;
+                            ModifyTopoResult result = ApplyCurvesImmediate(lineIds, options);
+                            batchesThisSession++;
+                            totalLinesThisSession += lineIds.Count;
                             _dialog.UpdatePointCounts(
                                 result.OriginalPointCount,
                                 result.PointsAfterModification);
                             SetStatus(
-                                $"Chuỗi {chainsThisSession}: +{result.PointsAdded} điểm, " +
-                                $"{result.VerticesModified} cập nhật ({chainIds.Count} line). Esc để quay lại.");
+                                $"Lần {batchesThisSession}: +{result.PointsAdded} điểm, " +
+                                $"{result.VerticesModified} cập nhật ({lineIds.Count} line). Esc để quay lại.");
                         }
                     }
                     catch (Autodesk.Revit.Exceptions.OperationCanceledException)
@@ -407,7 +406,7 @@ namespace effetopo.Services
                     }
                 }
 
-                if (chainsThisSession > 0)
+                if (batchesThisSession > 0)
                 {
                     if (usePreview)
                         SetStatus(

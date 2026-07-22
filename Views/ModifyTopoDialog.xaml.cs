@@ -402,7 +402,7 @@ namespace effetopo.Views
             else if (shapeLineTool)
             {
                 ShowPreviewCheck.IsChecked = true;
-                SetPreviewStatus("Bấm Pick Lines. Tab để chọn line liên tiếp. Preview cam trước khi Ok.");
+                SetPreviewStatus("Bấm Pick Lines. Kéo cửa sổ hoặc click nhiều line (Tab chuyển highlight). Preview cam trước khi Ok.");
                 SetDraftStampCount(0);
             }
 
