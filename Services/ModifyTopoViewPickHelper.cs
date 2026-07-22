@@ -102,24 +102,44 @@ namespace effetopo.Services
                 }
             }
 
-            double searchRadius = Math.Max(GetTopoHorizontalSize(toposolid), 20);
-
-            double? surfaceZ = geometry?.TryGetSurfaceZ(pickX, pickY);
-            if (!surfaceZ.HasValue)
+            var survey = new RevitAlongSurfaceSampler.SurveyCoordinateHelper(doc);
+            if (RevitAlongSurfaceSampler.TrySampleAtXY(
+                    doc, toposolid, geometry, vertices, view, pickX, pickY, survey,
+                    out RevitAlongSurfaceSampler.AlongSurfaceSample sample))
             {
-                double? slabZ = ModifyTopoService.InterpolateSurfaceZ(vertices, pickX, pickY, searchRadius);
-                if (slabZ.HasValue)
-                    surfaceZ = slabZ.Value;
+                hitPoint = sample.ModelPoint;
+                return true;
             }
-            if (!surfaceZ.HasValue)
-            {
-                surfaceZ = ModifyTopoService.GetDisplaySurfaceZ(
-                    doc, toposolid, view, vertices, pickX, pickY, searchRadius);
-            }
-            if (!surfaceZ.HasValue)
-                surfaceZ = refZ;
 
-            hitPoint = new XYZ(pickX, pickY, surfaceZ.Value);
+            hitPoint = new XYZ(pickX, pickY, refZ);
+            return true;
+        }
+
+        public static bool TryGetHitOnToposolid(
+            UIDocument uidoc,
+            Toposolid toposolid,
+            ModifyTopoGeometrySurfaceCache geometry,
+            IntPtr excludeWindowHwnd,
+            out RevitAlongSurfaceSampler.AlongSurfaceSample sample,
+            out ElementId viewId)
+        {
+            sample = null;
+            viewId = ElementId.InvalidElementId;
+
+            if (!TryGetHitOnToposolid(
+                    uidoc, toposolid, geometry, excludeWindowHwnd, out XYZ hitPoint, out viewId))
+                return false;
+
+            if (hitPoint == null)
+                return false;
+
+            var survey = new RevitAlongSurfaceSampler.SurveyCoordinateHelper(uidoc.Document);
+            sample = new RevitAlongSurfaceSampler.AlongSurfaceSample
+            {
+                ModelPoint = hitPoint,
+                TopFaceModelZ = hitPoint.Z,
+                SurveyElevationFt = survey.ModelZToSurveyElevation(hitPoint.X, hitPoint.Y, hitPoint.Z)
+            };
             return true;
         }
 

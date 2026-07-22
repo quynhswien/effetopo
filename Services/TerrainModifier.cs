@@ -17,6 +17,8 @@ namespace effetopo.Services
         {
             public XYZ Center;
             public ModifyTopoOptions Options;
+            /// <summary>Survey elevation at pick (Elevation Base = Survey Point), when known.</summary>
+            public double? PickSurveyElevationFt;
         }
 
         public sealed class CalculateResult
@@ -145,7 +147,8 @@ namespace effetopo.Services
                         continue;
 
                     StampResult step = ApplyShapeByPointStamp(
-                        doc, toposolid, working, stamp.Center, stamp.Options);
+                        doc, toposolid, working, stamp.Center, stamp.Options, displayTopology,
+                        stamp.PickSurveyElevationFt);
                     working = step.Vertices;
                     totalAdded += step.PointsAdded;
                     totalModified += step.VerticesModified;
@@ -158,7 +161,12 @@ namespace effetopo.Services
             return new CalculateResult
             {
                 Vertices = working,
-                Mesh = TerrainMeshBuilder.BuildBrushOverlay(workingVertices: working, stamps),
+                Mesh = TerrainMeshBuilder.BuildBrushOverlay(
+                    workingVertices: working,
+                    stamps,
+                    displayTopology,
+                    doc,
+                    toposolid),
                 PreviewSolids = previewSolids,
                 TotalPointsAdded = totalAdded,
                 TotalVerticesModified = totalModified
@@ -171,7 +179,9 @@ namespace effetopo.Services
             Toposolid toposolid,
             IList<ModifyTopoService.SculptVertexSnapshot> vertices,
             XYZ center,
-            ModifyTopoOptions options)
+            ModifyTopoOptions options,
+            ModifyTopoGeometrySurfaceCache displayTopology = null,
+            double? pickSurveyElevationFt = null)
         {
             if (vertices == null || center == null || options == null)
                 throw new ArgumentNullException();
@@ -181,8 +191,14 @@ namespace effetopo.Services
             const double xyTol = 0.15;
             double radius = Math.Max(options.ShapeRadiusFeet, 0.1);
 
+            // Nearest existing slab vertex within stamp radius (for on-vertex picks only).
+            double? centerAnchorZ = ModifyTopoService.TryGetNearestSlabVertexZ(
+                vertices, center.X, center.Y, xyTol);
+            var survey = new RevitAlongSurfaceSampler.SurveyCoordinateHelper(doc);
+            double pickSurfaceModelZ = center.Z;
+
             var addPoints = ModifyTopoService.ComputeShapeByPointAddPreviewPoints(
-                doc, toposolid, center, options, working);
+                doc, toposolid, center, options, working, displayTopology);
             foreach (XYZ pt in addPoints)
             {
                 bool exists = working.Any(v => HorizontalDistance(v.X, v.Y, pt.X, pt.Y) < xyTol);
@@ -197,13 +213,14 @@ namespace effetopo.Services
 
             int pointsAdded = working.Count - countBefore;
 
-            // Sample center Z after add-points on the same vertex set used for deformation.
-            double centerOriginalZ = ModifyTopoService.GetModelSurfaceZ(
-                    doc, toposolid, working, center.X, center.Y, radius)
-                ?? center.Z;
-            double targetZ = centerOriginalZ + options.ShapeDeltaFeet;
             int verticesModified = 0;
             const double zTolerance = 1e-6;
+            double centerDist = double.MaxValue;
+            double centerBeforeModel = 0;
+            double centerAfterModel = 0;
+            double centerBeforeSurvey = 0;
+            double centerAfterSurvey = 0;
+            double centerBaseModel = 0;
 
             foreach (ModifyTopoService.SculptVertexSnapshot v in working)
             {
@@ -211,10 +228,79 @@ namespace effetopo.Services
                 if (dist > radius) continue;
 
                 double w = ModifyTopoService.ComputeFalloff(dist / radius, options.ShapeFalloff);
-                double newZ = v.Z + (targetZ - centerOriginalZ) * w;
+
+                double? alongSurfaceZ = RevitAlongSurfaceSampler.GetAlongSurfaceModelZ(
+                    doc, toposolid, displayTopology, vertices, null, v.X, v.Y, radius);
+                double baseZ = alongSurfaceZ ?? v.Z;
+                if (dist < xyTol && centerAnchorZ.HasValue)
+                    baseZ = centerAnchorZ.Value;
+                if (dist < xyTol)
+                    baseZ = pickSurfaceModelZ;
+
+                double beforeModel = v.Z;
+                double newZ;
+                if (pickSurveyElevationFt.HasValue && survey.IsAvailable && dist < xyTol)
+                {
+                    double targetSurvey = pickSurveyElevationFt.Value + options.ShapeDeltaFeet * w;
+                    newZ = survey.SurveyElevationToModelZ(v.X, v.Y, targetSurvey);
+                }
+                else
+                {
+                    newZ = RevitAlongSurfaceSampler.ApplyAlongSurfaceGain(
+                        doc, v.X, v.Y, baseZ, options.ShapeDeltaFeet, w, survey);
+                }
+
+                if (dist < centerDist)
+                {
+                    centerDist = dist;
+                    centerBeforeModel = beforeModel;
+                    centerAfterModel = newZ;
+                    centerBaseModel = baseZ;
+                    if (survey.IsAvailable)
+                    {
+                        centerBeforeSurvey = survey.ModelZToSurveyElevation(v.X, v.Y, beforeModel);
+                        centerAfterSurvey = survey.ModelZToSurveyElevation(v.X, v.Y, newZ);
+                    }
+                }
+
                 if (Math.Abs(newZ - v.Z) > zTolerance)
                     verticesModified++;
                 v.Z = newZ;
+            }
+
+            if (pickSurveyElevationFt.HasValue && survey.IsAvailable)
+            {
+                double pickTargetSurvey = pickSurveyElevationFt.Value + options.ShapeDeltaFeet;
+                double pickTargetModel = survey.SurveyElevationToModelZ(
+                    center.X, center.Y, pickTargetSurvey);
+                Log.Information(
+                    "Shape stamp at pick: survey {Pick:F3} + gain {Gain:F3} = {Target:F3} ft (model Z {ModelPick:F3} -> {ModelTarget:F3} ft)",
+                    pickSurveyElevationFt.Value,
+                    options.ShapeDeltaFeet,
+                    pickTargetSurvey,
+                    pickSurfaceModelZ,
+                    pickTargetModel);
+            }
+
+            if (centerDist < double.MaxValue && survey.IsAvailable)
+            {
+                double anchorSurvey = pickSurveyElevationFt
+                    ?? survey.ModelZToSurveyElevation(center.X, center.Y, centerBaseModel);
+                Log.Information(
+                    "Shape stamp center: survey {Before:F3} -> {After:F3} ft (pick/anchor {Anchor:F3}, gain {Gain:F3} ft, dist {Dist:F3} ft); model Z {ModelBefore:F3} -> {ModelAfter:F3} ft",
+                    centerBeforeSurvey,
+                    centerAfterSurvey,
+                    anchorSurvey,
+                    options.ShapeDeltaFeet,
+                    centerDist,
+                    centerBeforeModel,
+                    centerAfterModel);
+            }
+            else if (centerDist < double.MaxValue)
+            {
+                Log.Information(
+                    "Shape stamp center: model Z {Before:F3} -> {After:F3} ft (base {Base:F3}, gain {Gain:F3} ft, dist {Dist:F3} ft)",
+                    centerBeforeModel, centerAfterModel, centerBaseModel, options.ShapeDeltaFeet, centerDist);
             }
 
             return new StampResult

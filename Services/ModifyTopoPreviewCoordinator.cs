@@ -1,5 +1,5 @@
 using System;
-
+using System.Collections.Generic;
 using System.Linq;
 
 using System.Windows.Interop;
@@ -290,50 +290,42 @@ namespace effetopo.Services
             IntPtr dialogHwnd = new WindowInteropHelper(_dialog).Handle;
 
             if (!ModifyTopoViewPickHelper.TryGetHitOnToposolid(
-
                     _uidoc, _toposolid, _geometryCache, dialogHwnd,
-
-                    out XYZ hoverCenter, out ElementId viewId))
-
+                    out RevitAlongSurfaceSampler.AlongSurfaceSample hoverSample, out ElementId viewId))
             {
-
                 _lastHoverKey = string.Empty;
 
                 if (_draftSession.HasPendingChanges)
-
                     RefreshDraftPreview();
-
                 else
-
                     ClearPreview();
 
                 return;
-
             }
 
-
-
-            string hoverKey = BuildHoverKey(hoverCenter, options, _draftSession.StampCount);
-
+            string hoverKey = BuildHoverKey(hoverSample, options, _draftSession.StampCount);
             if (hoverKey == _lastHoverKey)
-
                 return;
-
             _lastHoverKey = hoverKey;
 
+            RefreshPreviewWithHover(hoverSample, options, viewId);
 
-
-            RefreshPreviewWithHover(hoverCenter, options, viewId);
-
-            SetStatus($"Hover preview — Gain {options.ShapeDeltaFeet:F1} ft, radius {options.ShapeRadiusFeet:F1} ft");
-
+            string elevLabel = RevitAlongSurfaceSampler.FormatSurveyElevation(
+                _doc, hoverSample.SurveyElevationFt);
+            SetStatus($"{elevLabel}  ·  Gain {options.ShapeDeltaFeet:F1} ft, R {options.ShapeRadiusFeet:F1} ft");
         }
 
+        private static string BuildHoverKey(
+            RevitAlongSurfaceSampler.AlongSurfaceSample sample,
+            ModifyTopoOptions options,
+            int stampCount)
+        {
+            if (sample?.ModelPoint == null)
+                return string.Empty;
 
-
-        private static string BuildHoverKey(XYZ center, ModifyTopoOptions options, int stampCount) =>
-
-            $"{center.X:F2}:{center.Y:F2}:{options.ShapeRadiusFeet:F2}:{options.ShapeDeltaFeet:F2}:{options.ShapePointDensity}:{stampCount}";
+            return $"{sample.ModelPoint.X:F2}:{sample.ModelPoint.Y:F2}:{sample.SurveyElevationFt:F2}:" +
+                   $"{options.ShapeRadiusFeet:F2}:{options.ShapeDeltaFeet:F2}:{options.ShapePointDensity}:{stampCount}";
+        }
 
 
 
@@ -608,14 +600,34 @@ namespace effetopo.Services
 
 
                         XYZ pick = _uidoc.Selection.PickPoint(
-
                             ObjectSnapTypes.Nearest | ObjectSnapTypes.Intersections,
-
                             prompt);
 
+                        if (!RevitAlongSurfaceSampler.TryNormalizePick(
+                                _doc, _toposolid, _geometryCache,
+                                _draftSession.GetBaseVertices(), _uidoc, pick,
+                                out RevitAlongSurfaceSampler.AlongSurfaceSample normalized))
+                        {
+                            var survey = new RevitAlongSurfaceSampler.SurveyCoordinateHelper(_doc);
+                            normalized = new RevitAlongSurfaceSampler.AlongSurfaceSample
+                            {
+                                ModelPoint = pick,
+                                TopFaceModelZ = pick.Z,
+                                SurveyElevationFt = survey.IsAvailable
+                                    ? survey.ModelZToSurveyElevation(pick.X, pick.Y, pick.Z)
+                                    : pick.Z
+                            };
+                        }
 
+                        Log.Information(
+                            "Shape pick: survey {Survey:F3} ft, model Z {ModelZ:F3} ft at ({X:F2},{Y:F2})",
+                            normalized.SurveyElevationFt,
+                            normalized.TopFaceModelZ,
+                            normalized.ModelPoint.X,
+                            normalized.ModelPoint.Y);
 
-                        ModifyTopoDraftStampResult staged = _draftSession.StageStamp(pick, options);
+                        ModifyTopoDraftStampResult staged = _draftSession.StageStamp(
+                            normalized.ModelPoint, options, normalized.SurveyElevationFt);
 
                         stampsThisSession++;
 
@@ -781,7 +793,12 @@ namespace effetopo.Services
 
 
 
-            ShowCalculatedMesh(_draftSession.LastCalculated, _doc.ActiveView?.Id ?? ElementId.InvalidElementId);
+            ShowCalculatedMesh(
+                _draftSession.LastCalculated,
+                _doc.ActiveView?.Id ?? ElementId.InvalidElementId,
+                _draftSession.Stamps
+                    .Select(s => new TerrainModifier.StampDefinition { Center = s.Center, Options = s.Options })
+                    .ToList());
 
         }
 
@@ -817,65 +834,61 @@ namespace effetopo.Services
 
 
 
-        private void RefreshPreviewWithHover(XYZ hoverCenter, ModifyTopoOptions options, ElementId viewId)
-
+        private void RefreshPreviewWithHover(
+            RevitAlongSurfaceSampler.AlongSurfaceSample hoverSample,
+            ModifyTopoOptions options,
+            ElementId viewId)
         {
-
-            var stampDefs = _draftSession.Stamps
-
+            var committedStamps = _draftSession.Stamps
                 .Select(s => new TerrainModifier.StampDefinition { Center = s.Center, Options = s.Options })
-
                 .ToList();
 
-
-
-            if (hoverCenter != null)
-
+            var stampDefs = new List<TerrainModifier.StampDefinition>(committedStamps);
+            if (hoverSample?.ModelPoint != null)
             {
-
                 stampDefs.Add(new TerrainModifier.StampDefinition
-
                 {
-
-                    Center = hoverCenter,
-
+                    Center = hoverSample.ModelPoint,
                     Options = options
-
                 });
-
             }
 
-
-
             TerrainModifier.CalculateResult calculated = TerrainModifier.Calculate(
-
                 _doc, _toposolid, _draftSession.GetBaseVertices(), stampDefs, _geometryCache);
 
-
-
-            ShowCalculatedMesh(calculated, viewId);
-
+            ShowCalculatedMesh(calculated, viewId, committedStamps, hoverSample);
         }
 
 
 
-        private void ShowCalculatedMesh(TerrainModifier.CalculateResult calculated, ElementId viewId)
-
+        private void ShowCalculatedMesh(
+            TerrainModifier.CalculateResult calculated,
+            ElementId viewId,
+            IReadOnlyList<TerrainModifier.StampDefinition> stampMarkers = null,
+            RevitAlongSurfaceSampler.AlongSurfaceSample hoverSample = null)
         {
-
             if (calculated == null)
-
                 return;
 
-
+            if (calculated.Mesh != null)
+            {
+                calculated.Mesh.PointMarkers.Clear();
+                TerrainMeshBuilder.AddRevitPointMarkers(
+                    calculated.Mesh,
+                    stampMarkers,
+                    _geometryCache,
+                    _doc,
+                    _toposolid,
+                    hoverSample);
+            }
 
             bool hasSolids = calculated.PreviewSolids != null && calculated.PreviewSolids.Count > 0;
-
             bool hasBrush = calculated.Mesh?.LineSegments.Count >= 2;
+            bool hasMarkers = calculated.Mesh?.PointMarkers.Count > 0;
 
 
 
-            if (!hasSolids && !hasBrush)
+            if (!hasSolids && !hasBrush && !hasMarkers)
 
             {
 
@@ -899,24 +912,15 @@ namespace effetopo.Services
 
 
 
-            if (hasBrush)
-
+            if (hasBrush || hasMarkers)
             {
-
                 _dc3dPreview.SetMesh(calculated.Mesh);
-
                 _dc3dPreview.SetVisible(true);
-
             }
-
             else
-
             {
-
                 _dc3dPreview.SetMesh(null);
-
                 _dc3dPreview.SetVisible(false);
-
             }
 
 

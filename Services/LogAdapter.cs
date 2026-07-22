@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Text.RegularExpressions;
 
@@ -224,27 +225,37 @@ namespace effetopo.Services
             {
                 string result = messageTemplate;
 
-                // First pass: Replace indexed placeholders {0}, {1}, etc.
+                // Indexed placeholders: {0}, {0:F3}, etc.
                 for (int i = 0; i < propertyValues.Length; i++)
                 {
-                    string indexedPlaceholder = $"{{{i}}}";
-                    if (result.Contains(indexedPlaceholder))
+                    string pattern = @"\{" + i + @"(?::([^}]+))?\}";
+                    int index = i;
+                    result = Regex.Replace(result, pattern, match =>
                     {
-                        result = result.Replace(indexedPlaceholder, propertyValues[i]?.ToString() ?? "null");
-                    }
+                        object val = propertyValues[index];
+                        if (val == null)
+                            return "null";
+                        if (match.Groups[1].Success)
+                            return string.Format(CultureInfo.InvariantCulture, "{0:" + match.Groups[1].Value + "}", val);
+                        return val.ToString();
+                    });
                 }
 
-                // Second pass: Try to handle named properties like {ErrorType}, {ErrorMessage} 
-                // using positional values since we don't have name-value pairs
-                var matches = Regex.Matches(result, @"\{([A-Za-z0-9_]+)\}");
-                for (int i = 0; i < matches.Count && i < propertyValues.Length; i++)
+                // Named placeholders: {Name}, {Name:F3} — positional by appearance order.
+                var namedMatches = Regex.Matches(result, @"\{([A-Za-z_][A-Za-z0-9_]*)(?::([^}]+))?\}");
+                int namedIndex = 0;
+                foreach (Match match in namedMatches)
                 {
-                    if (matches[i].Success)
-                    {
-                        string placeholder = matches[i].Value;
-                        string value = propertyValues[i]?.ToString() ?? "null";
-                        result = result.Replace(placeholder, value);
-                    }
+                    if (namedIndex >= propertyValues.Length)
+                        break;
+
+                    object val = propertyValues[namedIndex++];
+                    string replacement = val == null
+                        ? "null"
+                        : match.Groups[2].Success
+                            ? string.Format(CultureInfo.InvariantCulture, "{0:" + match.Groups[2].Value + "}", val)
+                            : val.ToString();
+                    result = result.Replace(match.Value, replacement);
                 }
 
                 return result;

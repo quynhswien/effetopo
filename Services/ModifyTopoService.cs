@@ -78,9 +78,7 @@ namespace effetopo.Services
             if (originalCount == 0)
                 throw new InvalidOperationException("Toposolid has no SlabShape vertices to modify.");
 
-            double levelElev = GetLevelElevation(doc, toposolid);
-            double heightOffset = GetHeightOffsetFromLevel(toposolid);
-            var state = new SculptState(doc, toposolid, vertices, levelElev, heightOffset);
+            var state = CreateSculptState(doc, toposolid, editor);
 
             switch (options.Tool)
             {
@@ -158,7 +156,10 @@ namespace effetopo.Services
             Toposolid toposolid,
             IList<SculptVertexSnapshot> baseVertices,
             IList<SculptVertexSnapshot> targetVertices,
-            bool logResult = true)
+            bool logResult = true,
+            XYZ stampPickCenter = null,
+            double? stampPickSurveyFt = null,
+            double stampGainFeet = 0)
         {
             if (doc == null || toposolid == null || baseVertices == null || targetVertices == null)
                 throw new ArgumentNullException();
@@ -168,41 +169,40 @@ namespace effetopo.Services
                 throw new InvalidOperationException("Could not access SlabShapeEditor on Toposolid.");
 
             editor.Enable();
+            var elevation = new TopoSurveyElevationContext(doc, toposolid, editor);
 
-            var vertices = CollectVertices(doc, toposolid, editor);
+            var vertices = CollectVertices(doc, toposolid, editor, elevation);
             int originalCount = baseVertices.Count;
-            double levelElev = GetLevelElevation(doc, toposolid);
-            double heightOffset = GetHeightOffsetFromLevel(toposolid);
-            var state = new SculptState(doc, toposolid, vertices, levelElev, heightOffset);
+            var state = new SculptState(doc, toposolid, vertices, elevation);
 
             const double xyTol = 0.15;
             int pointsAdded = 0;
 
-            foreach (SculptVertexSnapshot target in targetVertices)
+            var addTargets = DeduplicateTargetsByXY(targetVertices, xyTol);
+
+            foreach (SculptVertexSnapshot target in addTargets)
             {
                 bool exists = state.Vertices.Any(v =>
                     HorizontalDistance(v.X, v.Y, target.X, target.Y) < xyTol);
                 if (exists) continue;
 
-                double slabZ = state.ModelZToSlabOffset(target.Z);
-                if (!SlabShapeEditorHelper.TryAddPoint(editor, new XYZ(target.X, target.Y, slabZ)))
+                if (!TrySetTopoVertexModelZ(editor, target.X, target.Y, target.Z))
                     continue;
 
                 doc.Regenerate();
                 SlabShapeVertex vertex = FindSlabShapeVertexNearXY(editor, target.X, target.Y, xyTol);
                 if (vertex == null) continue;
 
-                var snapshots = state.Vertices
-                    .Select(v => new SculptVertexSnapshot { X = v.X, Y = v.Y, Z = v.Z })
-                    .ToList();
-                double modelZ = VertexZToModelZ(doc, toposolid, snapshots, vertex.Position.Z);
+                doc.Regenerate();
+                XYZ pos = vertex.Position;
+                double modelZ = SlabPositionToModelZ(doc, toposolid, elevation, pos.Z);
                 state.PointsAdded++;
                 pointsAdded++;
                 state.Vertices.Add(new SculptVertex
                 {
                     RevitVertex = vertex,
-                    X = target.X,
-                    Y = target.Y,
+                    X = pos.X,
+                    Y = pos.Y,
                     Z = modelZ,
                     OriginalZ = modelZ
                 });
@@ -211,27 +211,59 @@ namespace effetopo.Services
             if (pointsAdded > 0)
             {
                 doc.Regenerate();
-                RefreshRevitVertices(editor, state);
-            }
-
-            var targetByKey = new Dictionary<string, double>(StringComparer.Ordinal);
-            foreach (SculptVertexSnapshot t in targetVertices)
-            {
-                string key = $"{Math.Round(t.X, 4)}:{Math.Round(t.Y, 4)}";
-                targetByKey[key] = t.Z;
+                RefreshRevitVertices(editor, state, elevation);
             }
 
             const double zTolerance = 1e-6;
             foreach (SculptVertex v in state.Vertices)
             {
-                string key = $"{Math.Round(v.X, 4)}:{Math.Round(v.Y, 4)}";
-                if (!targetByKey.TryGetValue(key, out double targetZ))
-                    continue;
-                if (Math.Abs(targetZ - v.Z) > zTolerance)
-                    v.Z = targetZ;
+                SculptVertexSnapshot bestTarget = null;
+                double bestDist = xyTol;
+                foreach (SculptVertexSnapshot t in targetVertices)
+                {
+                    double d = HorizontalDistance(v.X, v.Y, t.X, t.Y);
+                    if (d < bestDist)
+                    {
+                        bestDist = d;
+                        bestTarget = t;
+                    }
+                }
+
+                if (bestTarget != null && Math.Abs(bestTarget.Z - v.Z) > zTolerance)
+                    v.Z = bestTarget.Z;
             }
 
-            int modified = WriteVertexZChanges(editor, state);
+            int modified = WriteVertexZChanges(
+                editor, state, elevation, logResult, stampPickCenter, stampPickSurveyFt, stampGainFeet);
+
+            if (stampPickCenter != null && stampPickSurveyFt.HasValue)
+            {
+                double pickTargetModelZ = elevation.SurveyElevationToModelZ(
+                    stampPickCenter.X, stampPickCenter.Y, stampPickSurveyFt.Value + stampGainFeet);
+                if (TrySetTopoVertexModelZ(
+                        editor, stampPickCenter.X, stampPickCenter.Y, pickTargetModelZ))
+                    modified++;
+            }
+
+            doc.Regenerate();
+
+            if (logResult && stampPickCenter != null && stampPickSurveyFt.HasValue)
+            {
+                SlabShapeVertex pickVertex = FindSlabShapeVertexNearXY(
+                    editor, stampPickCenter.X, stampPickCenter.Y, 0.15);
+                if (pickVertex != null)
+                {
+                    double readModelZ = SlabPositionToModelZ(
+                        doc, toposolid, elevation, pickVertex.Position.Z);
+                    double readSurvey = elevation.ModelZToSurveyElevation(
+                        stampPickCenter.X, stampPickCenter.Y, readModelZ);
+                    Log.Information(
+                        "Commit verify after regenerate: survey {Read:F3} ft (target {Target:F3} ft)",
+                        readSurvey,
+                        stampPickSurveyFt.Value + stampGainFeet);
+                }
+            }
+
             doc.Regenerate();
             int afterCount = CountSlabShapeVertices(toposolid);
 
@@ -285,9 +317,7 @@ namespace effetopo.Services
             if (originalCount == 0)
                 throw new InvalidOperationException("Toposolid has no SlabShape vertices to modify.");
 
-            double levelElev = GetLevelElevation(doc, toposolid);
-            double heightOffset = GetHeightOffsetFromLevel(toposolid);
-            var state = new SculptState(doc, toposolid, vertices, levelElev, heightOffset);
+            var state = CreateSculptState(doc, toposolid, editor);
 
             const double xyTol = 0.15;
             var rawSnapshots = state.Vertices
@@ -305,8 +335,7 @@ namespace effetopo.Services
                     continue;
                 }
 
-                double slabZ = state.ModelZToSlabOffset(point.Z);
-                if (!SlabShapeEditorHelper.TryAddPoint(editor, new XYZ(point.X, point.Y, slabZ)))
+                if (!TrySetTopoVertexModelZ(editor, point.X, point.Y, point.Z))
                     continue;
 
                 doc.Regenerate();
@@ -314,7 +343,7 @@ namespace effetopo.Services
                 if (vertex == null)
                     continue;
 
-                double modelZ = VertexZToModelZ(doc, toposolid, rawSnapshots, vertex.Position.Z);
+                double modelZ = SlabPositionToModelZ(doc, toposolid, state.Elevation, vertex.Position.Z);
                 state.PointsAdded++;
                 state.Vertices.Add(new SculptVertex
                 {
@@ -411,8 +440,7 @@ namespace effetopo.Services
             public Document Doc;
             public Toposolid Toposolid;
             public List<SculptVertex> Vertices;
-            public double LevelElevation;
-            public double HeightOffset;
+            public TopoSurveyElevationContext Elevation;
             public int PointsAdded;
             public int PointsRemoved;
 
@@ -420,41 +448,131 @@ namespace effetopo.Services
                 Document doc,
                 Toposolid toposolid,
                 List<SculptVertex> vertices,
-                double levelElev,
-                double heightOffset)
+                TopoSurveyElevationContext elevation)
             {
                 Doc = doc;
                 Toposolid = toposolid;
                 Vertices = vertices;
-                LevelElevation = levelElev;
-                HeightOffset = heightOffset;
+                Elevation = elevation;
             }
 
             public double ModelZToSlabOffset(double modelZ) =>
-                modelZ - LevelElevation - HeightOffset;
+                Elevation.ModelZToSlabOffset(modelZ);
         }
+
+        /// <summary>
+        /// Survey Point slab read/write — same frame as ToposolidMergeService FloorSurveyElevationContext.
+        /// </summary>
+        private sealed class TopoSurveyElevationContext
+        {
+            private readonly RevitAlongSurfaceSampler.SurveyCoordinateHelper _survey;
+            private readonly double _referencePlaneModelZ;
+
+            public TopoSurveyElevationContext(
+                Document doc,
+                Toposolid toposolid,
+                SlabShapeEditor editor)
+            {
+                _survey = new RevitAlongSurfaceSampler.SurveyCoordinateHelper(doc);
+                _referencePlaneModelZ = CalibrateToposolidReferencePlaneModelZ(doc, toposolid, editor);
+            }
+
+            public bool SurveyAvailable => _survey.IsAvailable;
+            public double ReferencePlaneModelZ => _referencePlaneModelZ;
+
+            public double SlabOffsetToModelZ(double slabOffsetFt) =>
+                _referencePlaneModelZ + slabOffsetFt;
+
+            public double ModelZToSlabOffset(double modelZ) =>
+                modelZ - _referencePlaneModelZ;
+
+            public double SlabOffsetToSurveyElevation(double x, double y, double slabOffsetFt)
+            {
+                double modelZ = SlabOffsetToModelZ(slabOffsetFt);
+                return _survey.IsAvailable
+                    ? _survey.ModelZToSurveyElevation(x, y, modelZ)
+                    : modelZ;
+            }
+
+            public double SurveyElevationToSlabOffset(double x, double y, double surveyElevationFt)
+            {
+                double targetModelZ = _survey.IsAvailable
+                    ? _survey.SurveyElevationToModelZ(x, y, surveyElevationFt)
+                    : surveyElevationFt;
+                return targetModelZ - _referencePlaneModelZ;
+            }
+
+            public double ModelZToSurveyElevation(double x, double y, double modelZ) =>
+                _survey.IsAvailable
+                    ? _survey.ModelZToSurveyElevation(x, y, modelZ)
+                    : modelZ;
+
+            public double SurveyElevationToModelZ(double x, double y, double surveyElevationFt) =>
+                _survey.IsAvailable
+                    ? _survey.SurveyElevationToModelZ(x, y, surveyElevationFt)
+                    : surveyElevationFt;
+        }
+
+        /// <summary>
+        /// Toposolid SlabShapeEditor uses absolute model Z in AddPoint (see ToposolidMergeService).
+        /// Do not average vertex Position.Z — those are surface elevations, not the reference plane.
+        /// </summary>
+        private static double CalibrateToposolidReferencePlaneModelZ(
+            Document doc, Toposolid toposolid, SlabShapeEditor editor) =>
+            GetReferencePlaneModelZ(doc, toposolid);
+
+        /// <summary>Write elevation via AddPoint at model Z — matches Toposolid merge / excavate path.</summary>
+        private static bool TrySetTopoVertexModelZ(
+            SlabShapeEditor editor, double x, double y, double targetModelZ)
+        {
+            if (editor == null)
+                return false;
+
+            return SlabShapeEditorHelper.TryAddPoint(editor, new XYZ(x, y, targetModelZ));
+        }
+
+        private static double TargetModelZToSlabOffset(
+            TopoSurveyElevationContext elevation, double x, double y, double targetModelZ)
+        {
+            if (elevation.SurveyAvailable)
+            {
+                double targetSurvey = elevation.ModelZToSurveyElevation(x, y, targetModelZ);
+                return elevation.SurveyElevationToSlabOffset(x, y, targetSurvey);
+            }
+
+            return elevation.ModelZToSlabOffset(targetModelZ);
+        }
+
+        private static SculptState CreateSculptState(
+            Document doc, Toposolid toposolid, SlabShapeEditor editor)
+        {
+            var elevation = new TopoSurveyElevationContext(doc, toposolid, editor);
+            var vertices = CollectVertices(doc, toposolid, editor, elevation);
+            return new SculptState(doc, toposolid, vertices, elevation);
+        }
+
+        private static double TargetModelZToSlabOffset(
+            SculptState state, double x, double y, double targetModelZ) =>
+            TargetModelZToSlabOffset(state.Elevation, x, y, targetModelZ);
+
+        private static int WriteVertexZChanges(SlabShapeEditor editor, SculptState state) =>
+            WriteVertexZChanges(editor, state, state.Elevation, false, null, null, 0);
 
         private static List<SculptVertex> CollectVertices(
             Document doc,
             Toposolid toposolid,
-            SlabShapeEditor editor)
+            SlabShapeEditor editor,
+            TopoSurveyElevationContext elevation = null)
         {
+            elevation ??= new TopoSurveyElevationContext(doc, toposolid, editor);
             var list = new List<SculptVertex>();
             if (editor?.SlabShapeVertices == null) return list;
 
-            var rawSnapshots = new List<SculptVertexSnapshot>();
             foreach (SlabShapeVertex v in editor.SlabShapeVertices)
             {
                 if (v?.Position == null) continue;
                 XYZ p = v.Position;
-                rawSnapshots.Add(new SculptVertexSnapshot { X = p.X, Y = p.Y, Z = p.Z });
-            }
-
-            foreach (SlabShapeVertex v in editor.SlabShapeVertices)
-            {
-                if (v?.Position == null) continue;
-                XYZ p = v.Position;
-                double modelZ = VertexZToModelZ(doc, toposolid, rawSnapshots, p.Z);
+                double modelZ = SlabPositionToModelZ(doc, toposolid, elevation, p.Z);
                 list.Add(new SculptVertex
                 {
                     RevitVertex = v,
@@ -465,6 +583,25 @@ namespace effetopo.Services
                 });
             }
             return list;
+        }
+
+        /// <summary>
+        /// SlabShape Position.Z → model Z. Toposolid may store model Z in bbox range, else slab offset.
+        /// </summary>
+        private static double SlabPositionToModelZ(
+            Document doc, Toposolid toposolid, TopoSurveyElevationContext elevation, double slabPositionZ)
+        {
+            try
+            {
+                BoundingBoxXYZ bb = toposolid.get_BoundingBox(null);
+                if (bb != null &&
+                    slabPositionZ >= bb.Min.Z - 2.0 &&
+                    slabPositionZ <= bb.Max.Z + 2.0)
+                    return slabPositionZ;
+            }
+            catch { }
+
+            return elevation.SlabOffsetToModelZ(slabPositionZ);
         }
 
         private static SlabShapeVertex FindSlabShapeVertexNearXY(
@@ -493,6 +630,10 @@ namespace effetopo.Services
             return level?.Elevation ?? 0;
         }
 
+        /// <summary>Toposolid reference plane in model coordinates (level + height above level).</summary>
+        public static double GetReferencePlaneModelZ(Document doc, Toposolid toposolid) =>
+            GetLevelElevation(doc, toposolid) + GetHeightOffsetFromLevel(toposolid);
+
         private static double GetHeightOffsetFromLevel(Toposolid toposolid)
         {
             try
@@ -505,27 +646,92 @@ namespace effetopo.Services
             return 0;
         }
 
-        private static int WriteVertexZChanges(SlabShapeEditor editor, SculptState state)
+        private static List<SculptVertexSnapshot> DeduplicateTargetsByXY(
+            IEnumerable<SculptVertexSnapshot> targets, double tolerance)
+        {
+            var result = new List<SculptVertexSnapshot>();
+            if (targets == null)
+                return result;
+
+            foreach (SculptVertexSnapshot t in targets)
+            {
+                SculptVertexSnapshot existing = null;
+                foreach (SculptVertexSnapshot r in result)
+                {
+                    if (HorizontalDistance(r.X, r.Y, t.X, t.Y) < tolerance)
+                    {
+                        existing = r;
+                        break;
+                    }
+                }
+
+                if (existing == null)
+                {
+                    result.Add(new SculptVertexSnapshot { X = t.X, Y = t.Y, Z = t.Z });
+                }
+                else if (t.Z > existing.Z)
+                {
+                    existing.Z = t.Z;
+                }
+            }
+
+            return result;
+        }
+
+        private static int WriteVertexZChanges(
+            SlabShapeEditor editor,
+            SculptState state,
+            TopoSurveyElevationContext elevation,
+            bool logSurveySummary = false,
+            XYZ stampPickCenter = null,
+            double? stampPickSurveyFt = null,
+            double stampGainFeet = 0)
         {
             int modified = 0;
-            const double zTolerance = 1e-6;
+            const double zTolerance = 1e-4;
+            const double pickTol = 0.15;
 
             foreach (SculptVertex v in state.Vertices)
             {
                 if (v.RevitVertex == null) continue;
-                if (Math.Abs(v.Z - v.OriginalZ) < zTolerance) continue;
 
-                try
+                double targetModelZ = v.Z;
+                if (stampPickCenter != null && stampPickSurveyFt.HasValue &&
+                    HorizontalDistance(v.X, v.Y, stampPickCenter.X, stampPickCenter.Y) < pickTol)
                 {
-                    double slabOffset = state.ModelZToSlabOffset(v.Z);
-                    editor.ModifySubElement(v.RevitVertex, slabOffset);
-                    modified++;
+                    targetModelZ = elevation.SurveyElevationToModelZ(
+                        v.X, v.Y, stampPickSurveyFt.Value + stampGainFeet);
                 }
-                catch (Exception ex)
+
+                double currentModelZ = SlabPositionToModelZ(
+                    state.Doc, state.Toposolid, elevation, v.RevitVertex.Position.Z);
+                if (Math.Abs(targetModelZ - currentModelZ) < zTolerance)
+                    continue;
+
+                if (TrySetTopoVertexModelZ(editor, v.X, v.Y, targetModelZ))
+                    modified++;
+            }
+
+            if (logSurveySummary)
+            {
+                Log.Information(
+                    "Commit ref plane model Z = {RefZ:F4} ft, {Modified} vertices written via AddPoint(model Z)",
+                    elevation.ReferencePlaneModelZ, modified);
+
+                if (stampPickCenter != null && stampPickSurveyFt.HasValue)
                 {
-                    Log.Debug("ModifySubElement failed at ({X},{Y}): {Error}", v.X, v.Y, ex.Message);
+                    double expectedSurvey = stampPickSurveyFt.Value + stampGainFeet;
+                    double expectedModelZ = elevation.SurveyElevationToModelZ(
+                        stampPickCenter.X, stampPickCenter.Y, expectedSurvey);
+                    Log.Information(
+                        "Commit pick target survey {Target:F3} ft (model Z {ModelZ:F3} ft) at ({X:F2},{Y:F2})",
+                        expectedSurvey,
+                        expectedModelZ,
+                        stampPickCenter.X,
+                        stampPickCenter.Y);
                 }
             }
+
             return modified;
         }
 
@@ -579,15 +785,16 @@ namespace effetopo.Services
                     HorizontalDistance(v.X, v.Y, target.X, target.Y) < xyTol);
                 if (exists) continue;
 
-                double slabZ = state.ModelZToSlabOffset(target.Z);
-                if (!SlabShapeEditorHelper.TryAddPoint(editor, new XYZ(target.X, target.Y, slabZ)))
+                if (!TrySetTopoVertexModelZ(editor, target.X, target.Y, target.Z))
                     continue;
 
                 doc.Regenerate();
                 SlabShapeVertex vertex = FindSlabShapeVertexNearXY(editor, target.X, target.Y, xyTol);
                 if (vertex == null) continue;
 
-                double modelZ = VertexZToModelZ(doc, toposolid, beforeSnapshots, vertex.Position.Z);
+                doc.Regenerate();
+                XYZ pos = vertex.Position;
+                double modelZ = SlabPositionToModelZ(doc, toposolid, state.Elevation, pos.Z);
                 state.PointsAdded++;
                 state.Vertices.Add(new SculptVertex
                 {
@@ -605,18 +812,23 @@ namespace effetopo.Services
                 RefreshRevitVertices(editor, state);
             }
 
-            var targetByKey = new Dictionary<string, double>(StringComparer.Ordinal);
-            foreach (SculptVertexSnapshot t in result.Vertices)
-            {
-                string key = $"{Math.Round(t.X, 4)}:{Math.Round(t.Y, 4)}";
-                targetByKey[key] = t.Z;
-            }
-
+            const double matchTol = 0.15;
             foreach (SculptVertex v in state.Vertices)
             {
-                string key = $"{Math.Round(v.X, 4)}:{Math.Round(v.Y, 4)}";
-                if (targetByKey.TryGetValue(key, out double targetZ))
-                    v.Z = targetZ;
+                SculptVertexSnapshot bestTarget = null;
+                double bestDist = matchTol;
+                foreach (SculptVertexSnapshot t in result.Vertices)
+                {
+                    double d = HorizontalDistance(v.X, v.Y, t.X, t.Y);
+                    if (d < bestDist)
+                    {
+                        bestDist = d;
+                        bestTarget = t;
+                    }
+                }
+
+                if (bestTarget != null)
+                    v.Z = bestTarget.Z;
             }
 
             RefreshRevitVertices(editor, state);
@@ -643,8 +855,7 @@ namespace effetopo.Services
                     HorizontalDistance(v.X, v.Y, pt.X, pt.Y) < xyTol);
                 if (exists) continue;
 
-                double slabZ = state.ModelZToSlabOffset(pt.Z);
-                if (!SlabShapeEditorHelper.TryAddPoint(editor, new XYZ(pt.X, pt.Y, slabZ)))
+                if (!TrySetTopoVertexModelZ(editor, pt.X, pt.Y, pt.Z))
                     continue;
 
                 doc.Regenerate();
@@ -655,7 +866,7 @@ namespace effetopo.Services
                     continue;
                 }
 
-                double modelZ = VertexZToModelZ(doc, toposolid, snapshots, vertex.Position.Z);
+                double modelZ = SlabPositionToModelZ(doc, toposolid, state.Elevation, vertex.Position.Z);
                 state.PointsAdded++;
                 state.Vertices.Add(new SculptVertex
                 {
@@ -847,22 +1058,36 @@ namespace effetopo.Services
             RefreshRevitVertices(editor, state);
         }
 
-        private static void RefreshRevitVertices(SlabShapeEditor editor, SculptState state)
+        private static void RefreshRevitVertices(
+            SlabShapeEditor editor, SculptState state, TopoSurveyElevationContext elevation = null)
         {
             if (state?.Doc == null || state.Toposolid == null) return;
 
-            var fresh = CollectVertices(state.Doc, state.Toposolid, editor);
-            var byXY = fresh.ToDictionary(v => $"{Math.Round(v.X, 4)}:{Math.Round(v.Y, 4)}");
+            elevation ??= state.Elevation;
+            var fresh = CollectVertices(state.Doc, state.Toposolid, editor, elevation);
+            const double xyTol = 0.15;
 
             foreach (SculptVertex v in state.Vertices)
             {
-                string key = $"{Math.Round(v.X, 4)}:{Math.Round(v.Y, 4)}";
-                if (byXY.TryGetValue(key, out SculptVertex match))
+                SculptVertex best = null;
+                double bestDist = xyTol;
+                foreach (SculptVertex f in fresh)
                 {
-                    v.RevitVertex = match.RevitVertex;
-                    if (v.RevitVertex != null)
-                        v.OriginalZ = match.OriginalZ;
+                    double d = HorizontalDistance(v.X, v.Y, f.X, f.Y);
+                    if (d < bestDist)
+                    {
+                        bestDist = d;
+                        best = f;
+                    }
                 }
+
+                if (best == null)
+                    continue;
+
+                v.RevitVertex = best.RevitVertex;
+                v.X = best.X;
+                v.Y = best.Y;
+                v.OriginalZ = best.OriginalZ;
             }
         }
 
@@ -1106,58 +1331,75 @@ namespace effetopo.Services
             return GetModelSurfaceZ(doc, toposolid, vertices, x, y, searchRadius);
         }
 
-        /// <summary>Slab-shape vertex Z → model elevation (handles offset vs model coords).</summary>
+        /// <summary>Slab-shape vertex offset → model elevation (reference plane + offset when needed).</summary>
         public static double VertexZToModelZ(
-            Document doc, Toposolid toposolid, IList<SculptVertexSnapshot> vertices, double vertexZ)
+            Document doc, Toposolid toposolid, IEnumerable<SculptVertexSnapshot> vertices, double slabOffsetOrModelZ)
         {
             try
             {
                 BoundingBoxXYZ bb = toposolid.get_BoundingBox(null);
-                if (bb != null && vertexZ >= bb.Min.Z - 2.0 && vertexZ <= bb.Max.Z + 2.0)
-                    return vertexZ;
+                if (bb != null &&
+                    slabOffsetOrModelZ >= bb.Min.Z - 2.0 &&
+                    slabOffsetOrModelZ <= bb.Max.Z + 2.0)
+                    return slabOffsetOrModelZ;
             }
             catch { }
 
-            return GetLevelElevation(doc, toposolid) + GetHeightOffsetFromLevel(toposolid) + vertexZ;
+            return GetReferencePlaneModelZ(doc, toposolid) + slabOffsetOrModelZ;
         }
 
         /// <summary>Interpolated topo surface elevation in model coordinates at XY.</summary>
         public static double? GetModelSurfaceZ(
             Document doc,
             Toposolid toposolid,
-            IList<SculptVertexSnapshot> vertices,
+            IEnumerable<SculptVertexSnapshot> vertices,
             double x,
             double y,
             double searchRadius)
         {
-            double? slabZ = InterpolateSurfaceZ(vertices, x, y, searchRadius);
-            if (!slabZ.HasValue)
-            {
-                try
-                {
-                    BoundingBoxXYZ bb = toposolid.get_BoundingBox(null);
-                    if (bb != null)
-                        return (bb.Min.Z + bb.Max.Z) * 0.5;
-                }
-                catch { }
-                return null;
-            }
-
-            return VertexZToModelZ(doc, toposolid, vertices, slabZ.Value);
+            // Snapshots already store model Z — do not run slab-offset conversion again.
+            return InterpolateSurfaceZ(vertices, x, y, searchRadius);
         }
 
         public static double ComputeShapeFalloff(double t, SculptFalloffType type) =>
             ComputeFalloff(t, type);
 
-        /// <summary>Radial stamp points for hover preview (on topo surface + gain falloff).</summary>
-        public static List<XYZ> ComputeShapeByPointStampPoints(
+        /// <summary>Exact slab vertex Z when XY is on/near an existing control point.</summary>
+        public static double? TryGetNearestSlabVertexZ(
+            IEnumerable<SculptVertexSnapshot> vertices,
+            double x,
+            double y,
+            double tolerance = 0.15)
+        {
+            if (vertices == null)
+                return null;
+
+            double bestDist = tolerance;
+            double? bestZ = null;
+
+            foreach (SculptVertexSnapshot v in vertices)
+            {
+                double dist = HorizontalDistance(v.X, v.Y, x, y);
+                if (dist < bestDist)
+                {
+                    bestDist = dist;
+                    bestZ = v.Z;
+                }
+            }
+
+            return bestZ;
+        }
+
+        /// <summary>Radial stamp points on visible top face (Along Surface, offset 0 for placement).</summary>
+        internal static List<XYZ> ComputeShapeByPointStampPoints(
             XYZ center,
             ModifyTopoOptions options,
             IList<SculptVertexSnapshot> vertices,
             Document doc,
             Toposolid toposolid,
             View view,
-            bool previewWithGain)
+            bool previewWithGain,
+            ModifyTopoGeometrySurfaceCache geometry = null)
         {
             var result = new List<XYZ>();
             if (center == null || options == null)
@@ -1169,9 +1411,9 @@ namespace effetopo.Services
             int ringCount = Math.Max(1, density);
             int baseSegments = 6 + density * 2;
 
-            double centerSurfaceZ = doc != null && toposolid != null
-                ? GetModelSurfaceZ(doc, toposolid, vertices, center.X, center.Y, radius) ?? center.Z
-                : InterpolateSurfaceZ(vertices, center.X, center.Y, radius) ?? center.Z;
+            double centerSurfaceZ = SampleAlongSurfaceModelZ(
+                    doc, toposolid, geometry, vertices, view, center.X, center.Y, radius)
+                ?? center.Z;
 
             double centerGain = previewWithGain ? options.ShapeDeltaFeet : 0;
             result.Add(new XYZ(center.X, center.Y, centerSurfaceZ + centerGain));
@@ -1191,9 +1433,9 @@ namespace effetopo.Services
                     if (HorizontalDistance(gx, gy, center.X, center.Y) > radius + 0.01)
                         continue;
 
-                    double surfaceZ = doc != null && toposolid != null
-                        ? GetModelSurfaceZ(doc, toposolid, vertices, gx, gy, ringRadius + 2) ?? centerSurfaceZ
-                        : InterpolateSurfaceZ(vertices, gx, gy, ringRadius + 2) ?? centerSurfaceZ;
+                    double surfaceZ = SampleAlongSurfaceModelZ(
+                            doc, toposolid, geometry, vertices, view, gx, gy, ringRadius + 2)
+                        ?? centerSurfaceZ;
 
                     double dist = HorizontalDistance(gx, gy, center.X, center.Y);
                     double w = previewWithGain
@@ -1206,16 +1448,36 @@ namespace effetopo.Services
             return result;
         }
 
+        private static double? SampleAlongSurfaceModelZ(
+            Document doc,
+            Toposolid toposolid,
+            ModifyTopoGeometrySurfaceCache geometry,
+            IEnumerable<SculptVertexSnapshot> vertices,
+            View view,
+            double x,
+            double y,
+            double searchRadius)
+        {
+            if (doc != null && toposolid != null)
+            {
+                return RevitAlongSurfaceSampler.GetAlongSurfaceModelZ(
+                    doc, toposolid, geometry, vertices, view, x, y, searchRadius);
+            }
+
+            return InterpolateSurfaceZ(vertices, x, y, searchRadius);
+        }
+
         /// <summary>Stamp points that would be newly added (no existing vertex nearby).</summary>
-        public static List<XYZ> ComputeShapeByPointAddPreviewPoints(
+        internal static List<XYZ> ComputeShapeByPointAddPreviewPoints(
             Document doc,
             Toposolid toposolid,
             XYZ center,
             ModifyTopoOptions options,
-            IList<SculptVertexSnapshot> vertices)
+            IList<SculptVertexSnapshot> vertices,
+            ModifyTopoGeometrySurfaceCache geometry = null)
         {
             var stamp = ComputeShapeByPointStampPoints(
-                center, options, vertices, doc, toposolid, null, previewWithGain: false);
+                center, options, vertices, doc, toposolid, null, previewWithGain: false, geometry);
             if (vertices == null || vertices.Count == 0)
                 return stamp;
 

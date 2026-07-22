@@ -12,9 +12,17 @@ namespace effetopo.Services
         public List<XYZ> Positions = new();
         public List<int> TriangleIndices = new();
         public List<XYZ> LineSegments = new();
+        public List<TerrainPointMarker> PointMarkers = new();
         public Outline Bounds;
         public int TopSurfaceTriangles;
         public int DeltaWallTriangles;
+    }
+
+    internal sealed class TerrainPointMarker
+    {
+        public XYZ Center;
+        public double RadiusFeet;
+        public bool IsHover;
     }
 
     internal static class TerrainMeshBuilder
@@ -25,12 +33,62 @@ namespace effetopo.Services
 
         public static TerrainMesh BuildBrushOverlay(
             IReadOnlyList<ModifyTopoService.SculptVertexSnapshot> workingVertices,
-            IReadOnlyList<TerrainModifier.StampDefinition> stamps)
+            IReadOnlyList<TerrainModifier.StampDefinition> stamps,
+            ModifyTopoGeometrySurfaceCache geometry = null,
+            Document doc = null,
+            Toposolid toposolid = null)
         {
             var mesh = new TerrainMesh();
-            AddBrushRings(mesh, workingVertices, stamps);
+            AddBrushRings(mesh, workingVertices, stamps, geometry, doc, toposolid);
             mesh.Bounds = ComputeBounds(mesh);
             return mesh;
+        }
+
+        /// <summary>Revit-style blue point markers at stamp centers and hover cursor.</summary>
+        public static void AddRevitPointMarkers(
+            TerrainMesh mesh,
+            IReadOnlyList<TerrainModifier.StampDefinition> stamps,
+            ModifyTopoGeometrySurfaceCache geometry,
+            Document doc,
+            Toposolid toposolid,
+            RevitAlongSurfaceSampler.AlongSurfaceSample hoverSample)
+        {
+            if (mesh == null)
+                return;
+
+            if (stamps != null)
+            {
+                foreach (TerrainModifier.StampDefinition stamp in stamps)
+                {
+                    if (stamp?.Center == null)
+                        continue;
+
+                    double z = stamp.Center.Z;
+                    if (doc != null && toposolid != null)
+                    {
+                        z = RevitAlongSurfaceSampler.GetTopFaceModelZ(
+                                doc, toposolid, geometry, null, null, stamp.Center.X, stamp.Center.Y)
+                            ?? z;
+                    }
+
+                    mesh.PointMarkers.Add(new TerrainPointMarker
+                    {
+                        Center = new XYZ(stamp.Center.X, stamp.Center.Y, z),
+                        RadiusFeet = 0.28,
+                        IsHover = false
+                    });
+                }
+            }
+
+            if (hoverSample?.ModelPoint != null)
+            {
+                mesh.PointMarkers.Add(new TerrainPointMarker
+                {
+                    Center = hoverSample.ModelPoint,
+                    RadiusFeet = 0.38,
+                    IsHover = true
+                });
+            }
         }
 
         public static TerrainMesh Build(
@@ -211,7 +269,10 @@ namespace effetopo.Services
         private static void AddBrushRings(
             TerrainMesh mesh,
             IReadOnlyList<ModifyTopoService.SculptVertexSnapshot> workingVertices,
-            IReadOnlyList<TerrainModifier.StampDefinition> stamps)
+            IReadOnlyList<TerrainModifier.StampDefinition> stamps,
+            ModifyTopoGeometrySurfaceCache geometry = null,
+            Document doc = null,
+            Toposolid toposolid = null)
         {
             if (stamps == null) return;
 
@@ -221,7 +282,10 @@ namespace effetopo.Services
                     continue;
 
                 double radius = Math.Max(stamp.Options.ShapeRadiusFeet, 0.5);
-                double ringZ = ModifyTopoService.InterpolateSurfaceZ(
+                double ringZ = RevitAlongSurfaceSampler.GetAlongSurfaceModelZ(
+                        doc, toposolid, geometry, workingVertices, null,
+                        stamp.Center.X, stamp.Center.Y, radius)
+                    ?? ModifyTopoService.InterpolateSurfaceZ(
                         workingVertices, stamp.Center.X, stamp.Center.Y, radius)
                     ?? stamp.Center.Z;
                 ringZ += stamp.Options.ShapeDeltaFeet * 0.15;
@@ -296,6 +360,8 @@ namespace effetopo.Services
                 Include(p);
             foreach (XYZ p in mesh.LineSegments)
                 Include(p);
+            foreach (TerrainPointMarker marker in mesh.PointMarkers)
+                Include(marker.Center);
 
             if (!any)
                 return new Outline(XYZ.Zero, XYZ.Zero);

@@ -17,6 +17,7 @@ namespace effetopo.Services
         {
             public XYZ Center;
             public ModifyTopoOptions Options;
+            public double? PickSurveyElevationFt;
         }
 
         private readonly Document _doc;
@@ -45,7 +46,10 @@ namespace effetopo.Services
         public IReadOnlyList<StampRecord> Stamps => _stamps;
         public TerrainModifier.CalculateResult LastCalculated => _lastCalculated;
 
-        public ModifyTopoDraftStampResult StageStamp(XYZ center, ModifyTopoOptions options)
+        public ModifyTopoDraftStampResult StageStamp(
+            XYZ center,
+            ModifyTopoOptions options,
+            double? pickSurveyElevationFt = null)
         {
             if (center == null || options == null)
                 throw new ArgumentNullException();
@@ -54,7 +58,8 @@ namespace effetopo.Services
             _stamps.Add(new StampRecord
             {
                 Center = center,
-                Options = CloneOptions(options)
+                Options = CloneOptions(options),
+                PickSurveyElevationFt = pickSurveyElevationFt
             });
 
             Recalculate();
@@ -117,8 +122,13 @@ namespace effetopo.Services
             using (Transaction tx = new Transaction(_doc, "Shape by Point (commit draft)"))
             {
                 tx.Start();
+            StampRecord stamp = _stamps[_stamps.Count - 1];
                 last = ModifyTopoService.Instance.ApplyCalculatedVertices(
-                    _doc, _toposolid, _baseVertices, _lastCalculated.Vertices);
+                    _doc, _toposolid, _baseVertices, _lastCalculated.Vertices,
+                    logResult: true,
+                    stampPickCenter: stamp?.Center,
+                    stampPickSurveyFt: stamp?.PickSurveyElevationFt,
+                    stampGainFeet: stamp?.Options?.ShapeDeltaFeet ?? 0);
                 tx.Commit();
             }
 
@@ -136,7 +146,12 @@ namespace effetopo.Services
         private void Recalculate()
         {
             var stampDefs = _stamps
-                .Select(s => new TerrainModifier.StampDefinition { Center = s.Center, Options = s.Options })
+                .Select(s => new TerrainModifier.StampDefinition
+                {
+                    Center = s.Center,
+                    Options = s.Options,
+                    PickSurveyElevationFt = s.PickSurveyElevationFt
+                })
                 .ToList();
 
             _lastCalculated = TerrainModifier.Calculate(

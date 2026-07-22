@@ -139,14 +139,14 @@ namespace effetopo.Services
                 return;
 
             int triCount = mesh.TriangleIndices.Count / 3;
-            if (triCount == 0 && mesh.LineSegments.Count == 0)
+            if (triCount == 0 && mesh.LineSegments.Count == 0 && mesh.PointMarkers.Count == 0)
                 return;
 
             if (_renderCount < 3)
             {
                 _renderCount++;
-                Log.Debug("DirectContext3D RenderScene #{N} view={View} tris={Tris}",
-                    _renderCount, view?.Name, triCount);
+                Log.Debug("DirectContext3D RenderScene #{N} view={View} tris={Tris} markers={Markers}",
+                    _renderCount, view?.Name, triCount, mesh.PointMarkers.Count);
             }
 
             try
@@ -155,6 +155,8 @@ namespace effetopo.Services
                     DrawTriangles(mesh, triCount);
                 if (mesh.LineSegments.Count >= 2)
                     DrawLines(mesh);
+                if (mesh.PointMarkers.Count > 0)
+                    DrawPointMarkers(mesh);
             }
             catch (Exception ex)
             {
@@ -222,6 +224,128 @@ namespace effetopo.Services
             using var fx = new EffectInstance(VertexFormatBits.PositionColored);
             DrawContext.FlushBuffer(vbuf, vertexCount, ibuf, segmentCount * 2, vf, fx,
                 PrimitiveType.LineList, 0, segmentCount);
+        }
+
+        private static void DrawPointMarkers(TerrainMesh mesh)
+        {
+            const int segments = 24;
+            const double lift = 0.08;
+
+            foreach (TerrainPointMarker marker in mesh.PointMarkers)
+            {
+                if (marker?.Center == null)
+                    continue;
+
+                DrawRevitStylePointMarker(marker, segments, lift);
+            }
+        }
+
+        private static void DrawRevitStylePointMarker(TerrainPointMarker marker, int segments, double lift)
+        {
+            XYZ center = marker.Center + XYZ.BasisZ * lift;
+            double radius = Math.Max(marker.RadiusFeet, 0.1);
+            bool isHover = marker.IsHover;
+
+            var fillColor = isHover
+                ? new ColorWithTransparency(120, 190, 255, 40)
+                : new ColorWithTransparency(100, 170, 245, 55);
+            var outlineColor = isHover
+                ? new ColorWithTransparency(20, 60, 120, 0)
+                : new ColorWithTransparency(30, 70, 130, 0);
+
+            var ring = new XYZ[segments];
+            for (int i = 0; i < segments; i++)
+            {
+                double a = 2.0 * Math.PI * i / segments;
+                ring[i] = center + new XYZ(radius * Math.Cos(a), radius * Math.Sin(a), 0);
+            }
+
+            int centerIndex = 0;
+            int ringCount = segments;
+            int vertexCount = 1 + ringCount;
+            int floatsPerVertex = VertexPositionColored.GetSizeInFloats();
+
+            using (var vbuf = new VertexBuffer(vertexCount * floatsPerVertex))
+            {
+                vbuf.Map(0);
+                var vstream = vbuf.GetVertexStreamPositionColored();
+                vstream.AddVertex(new VertexPositionColored(center, fillColor));
+                centerIndex = 0;
+                for (int i = 0; i < ringCount; i++)
+                    vstream.AddVertex(new VertexPositionColored(ring[i], fillColor));
+                vbuf.Unmap();
+
+                using (var ibuf = new IndexBuffer(ringCount * 3))
+                {
+                    ibuf.Map(0);
+                    var istream = ibuf.GetIndexStreamTriangle();
+                    for (int i = 0; i < ringCount; i++)
+                    {
+                        int next = 1 + ((i + 1) % ringCount);
+                        istream.AddTriangle(new IndexTriangle(centerIndex, 1 + i, next));
+                    }
+                    ibuf.Unmap();
+
+                    using var vf = new VertexFormat(VertexFormatBits.PositionColored);
+                    using var fx = new EffectInstance(VertexFormatBits.PositionColored);
+                    DrawContext.FlushBuffer(vbuf, vertexCount, ibuf, ringCount * 3, vf, fx,
+                        PrimitiveType.TriangleList, 0, ringCount);
+                }
+            }
+
+            int outlineVertexCount = ringCount;
+            using (var vbuf = new VertexBuffer(outlineVertexCount * floatsPerVertex))
+            {
+                vbuf.Map(0);
+                var vstream = vbuf.GetVertexStreamPositionColored();
+                for (int i = 0; i < ringCount; i++)
+                    vstream.AddVertex(new VertexPositionColored(ring[i], outlineColor));
+                vbuf.Unmap();
+
+                using (var ibuf = new IndexBuffer(ringCount * 2))
+                {
+                    ibuf.Map(0);
+                    var istream = ibuf.GetIndexStreamLine();
+                    for (int i = 0; i < ringCount; i++)
+                        istream.AddLine(new IndexLine(i, (i + 1) % ringCount));
+                    ibuf.Unmap();
+
+                    using var vf = new VertexFormat(VertexFormatBits.PositionColored);
+                    using var fx = new EffectInstance(VertexFormatBits.PositionColored);
+                    DrawContext.FlushBuffer(vbuf, outlineVertexCount, ibuf, ringCount * 2, vf, fx,
+                        PrimitiveType.LineList, 0, ringCount);
+                }
+            }
+
+            if (isHover)
+            {
+                double cross = radius * 0.55;
+                var crossPts = new[]
+                {
+                    center + new XYZ(-cross, 0, 0),
+                    center + new XYZ(cross, 0, 0),
+                    center + new XYZ(0, -cross, 0),
+                    center + new XYZ(0, cross, 0)
+                };
+                using var vbuf = new VertexBuffer(crossPts.Length * floatsPerVertex);
+                vbuf.Map(0);
+                var vstream = vbuf.GetVertexStreamPositionColored();
+                foreach (XYZ p in crossPts)
+                    vstream.AddVertex(new VertexPositionColored(p, outlineColor));
+                vbuf.Unmap();
+
+                using var ibuf = new IndexBuffer(4);
+                ibuf.Map(0);
+                var istream = ibuf.GetIndexStreamLine();
+                istream.AddLine(new IndexLine(0, 1));
+                istream.AddLine(new IndexLine(2, 3));
+                ibuf.Unmap();
+
+                using var vf = new VertexFormat(VertexFormatBits.PositionColored);
+                using var fx = new EffectInstance(VertexFormatBits.PositionColored);
+                DrawContext.FlushBuffer(vbuf, crossPts.Length, ibuf, 4, vf, fx,
+                    PrimitiveType.LineList, 0, 2);
+            }
         }
     }
 #endif
