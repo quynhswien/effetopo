@@ -39,6 +39,10 @@ namespace effetopo.Services
         /// </summary>
         public int LastFloorFollowPointsAdjustedByAverage { get; private set; }
 
+        /// <summary>Statistics from last Wall follow Topo operation.</summary>
+        public int LastWallFollowSegmentsCreated { get; private set; }
+        public int LastWallFollowSamplePointsSkipped { get; private set; }
+
         /// <summary>
         /// Helper class to store point update information
         /// </summary>
@@ -2370,6 +2374,289 @@ namespace effetopo.Services
             Log.Information("Successfully made Floor follow Toposolid surface");
             return floor;
 #endif
+        }
+
+        /// <summary>
+        /// Makes a Wall follow a Toposolid surface: samples the wall location curve, projects each
+        /// sample onto the topo mesh (Survey Point elevation), and rebuilds the wall as segments
+        /// with per-segment base offset while preserving unconnected height.
+        /// </summary>
+        public IList<Wall> WallFollowToposolid(
+            Document doc,
+            Wall wall,
+#if REVIT2024_OR_GREATER
+            Toposolid toposolid,
+#else
+            Element toposolid,
+#endif
+            FloorBoundarySamplingOptions sampling = null)
+        {
+#if !REVIT2024_OR_GREATER
+            throw new NotSupportedException("Toposolid is only available in Revit 2024 and later");
+#else
+            if (doc == null || wall == null || toposolid == null)
+                throw new ArgumentNullException();
+
+            sampling ??= FloorBoundarySamplingOptions.Default;
+
+            if (wall.IsStackedWall)
+                throw new InvalidOperationException("Stacked walls are not supported.");
+
+            if (wall.WallType?.Kind == WallKind.Curtain)
+                throw new InvalidOperationException("Curtain walls are not supported.");
+
+            if (!(wall.Location is LocationCurve locationCurve) || locationCurve.Curve == null)
+                throw new InvalidOperationException("Wall must have a location curve.");
+
+            if (wall.LevelId == null || wall.LevelId == ElementId.InvalidElementId)
+                throw new InvalidOperationException("Wall must be associated with a level.");
+
+            Level level = doc.GetElement(wall.LevelId) as Level;
+            if (level == null)
+                throw new InvalidOperationException("Could not resolve wall level.");
+
+            Log.Information(
+                "Making Wall {WallId} follow Toposolid {TopoId}",
+                GetElementIdValue(wall.Id), GetElementIdValue(toposolid.Id));
+
+            Curve sourceCurve = locationCurve.Curve;
+            List<XYZ> samplePoints = CurvePointSampler.Sample(sourceCurve, sampling);
+            if (samplePoints.Count < 2)
+                throw new InvalidOperationException("Could not sample enough points along the wall path.");
+
+            var topoTriangles = ExtractTopTriangles(toposolid);
+            if (topoTriangles.Count == 0)
+                throw new InvalidOperationException("Toposolid has no valid geometry to project onto.");
+
+            var surveyCoords = new SurveyCoordinateHelper(doc);
+            BoundingBoxXYZ topoBbox = toposolid.get_BoundingBox(null);
+            double rayOriginZ = (topoBbox?.Max.Z ?? level.Elevation) + 30.0;
+            var topoElevationProvider = new TopoSurfaceElevationProvider(topoTriangles, rayOriginZ, surveyCoords);
+
+            double wallHeight = GetWallUnconnectedHeight(wall);
+            bool flipped = wall.Flipped;
+            bool structural = IsStructuralWall(wall);
+            ElementId wallTypeId = wall.WallType.Id;
+            ElementId levelId = wall.LevelId;
+            double levelElevation = level.Elevation;
+            double curveZ = levelElevation;
+
+            var baseOffsets = new double[samplePoints.Count];
+            int skippedSamples = 0;
+
+            for (int i = 0; i < samplePoints.Count; i++)
+            {
+                XYZ pt = samplePoints[i];
+                double? topoSurvey = topoElevationProvider.GetTopSurfaceSurveyElevation(pt.X, pt.Y, this);
+                if (!topoSurvey.HasValue)
+                {
+                    skippedSamples++;
+                    baseOffsets[i] = double.NaN;
+                    continue;
+                }
+
+                double targetModelZ = surveyCoords.IsAvailable
+                    ? surveyCoords.SurveyElevationToModelZ(pt.X, pt.Y, topoSurvey.Value)
+                    : topoSurvey.Value;
+                baseOffsets[i] = targetModelZ - levelElevation;
+            }
+
+            FillMissingWallBaseOffsets(baseOffsets, wall);
+
+            var createdWalls = new List<Wall>();
+            const double minSegmentLength = 0.05;
+
+            for (int i = 0; i < samplePoints.Count - 1; i++)
+            {
+                XYZ p0 = samplePoints[i];
+                XYZ p1 = samplePoints[i + 1];
+                if (p0 == null || p1 == null)
+                    continue;
+
+                double segLength = HorizontalDistance(p0.X, p0.Y, p1.X, p1.Y);
+                if (segLength < minSegmentLength)
+                    continue;
+
+                double offset0 = baseOffsets[i];
+                double offset1 = baseOffsets[i + 1];
+                double segmentOffset = (offset0 + offset1) * 0.5;
+
+                Curve segmentCurve = Line.CreateBound(
+                    new XYZ(p0.X, p0.Y, curveZ),
+                    new XYZ(p1.X, p1.Y, curveZ));
+
+                try
+                {
+                    Wall segment = Wall.Create(
+                        doc,
+                        segmentCurve,
+                        wallTypeId,
+                        levelId,
+                        wallHeight,
+                        segmentOffset,
+                        flipped,
+                        structural);
+
+                    if (segment == null)
+                        continue;
+
+                    CopyWallInstanceParameters(wall, segment);
+                    createdWalls.Add(segment);
+                }
+                catch (Exception ex)
+                {
+                    Log.Debug(
+                        "Could not create wall segment {Index} at ({X0},{Y0})-({X1},{Y1}): {Error}",
+                        i, p0.X, p0.Y, p1.X, p1.Y, ex.Message);
+                }
+            }
+
+            if (createdWalls.Count == 0)
+                throw new InvalidOperationException("No wall segments could be created along the sampled path.");
+
+            try
+            {
+                doc.Delete(wall.Id);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not delete original wall {Id}", GetElementIdValue(wall.Id));
+            }
+
+            LastWallFollowSegmentsCreated = createdWalls.Count;
+            LastWallFollowSamplePointsSkipped = skippedSamples;
+
+            Log.Information(
+                "Wall follow topo complete: {Segments} segments, {Skipped} samples skipped",
+                createdWalls.Count, skippedSamples);
+
+            return createdWalls;
+#endif
+        }
+
+        private static double GetWallUnconnectedHeight(Wall wall)
+        {
+            if (wall == null)
+                return 10.0;
+
+            try
+            {
+                Parameter heightParam = wall.get_Parameter(BuiltInParameter.WALL_USER_HEIGHT_PARAM);
+                if (heightParam != null && heightParam.HasValue && heightParam.AsDouble() > 1e-6)
+                    return heightParam.AsDouble();
+            }
+            catch { }
+
+            try
+            {
+                BoundingBoxXYZ bb = wall.get_BoundingBox(null);
+                if (bb != null)
+                    return bb.Max.Z - bb.Min.Z;
+            }
+            catch { }
+
+            return 10.0;
+        }
+
+        private static bool IsStructuralWall(Wall wall)
+        {
+            try
+            {
+                Parameter p = wall.get_Parameter(BuiltInParameter.WALL_STRUCTURAL_SIGNIFICANT);
+                return p != null && p.HasValue && p.AsInteger() == 1;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static void FillMissingWallBaseOffsets(double[] baseOffsets, Wall wall)
+        {
+            if (baseOffsets == null || baseOffsets.Length == 0)
+                return;
+
+            double fallback = 0;
+            try
+            {
+                Parameter offsetParam = wall.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET);
+                if (offsetParam != null && offsetParam.HasValue)
+                    fallback = offsetParam.AsDouble();
+            }
+            catch { }
+
+            for (int i = 0; i < baseOffsets.Length; i++)
+            {
+                if (!double.IsNaN(baseOffsets[i]))
+                    continue;
+
+                double prev = double.NaN;
+                double next = double.NaN;
+                for (int j = i - 1; j >= 0; j--)
+                {
+                    if (!double.IsNaN(baseOffsets[j])) { prev = baseOffsets[j]; break; }
+                }
+                for (int j = i + 1; j < baseOffsets.Length; j++)
+                {
+                    if (!double.IsNaN(baseOffsets[j])) { next = baseOffsets[j]; break; }
+                }
+
+                if (!double.IsNaN(prev) && !double.IsNaN(next))
+                    baseOffsets[i] = (prev + next) * 0.5;
+                else if (!double.IsNaN(prev))
+                    baseOffsets[i] = prev;
+                else if (!double.IsNaN(next))
+                    baseOffsets[i] = next;
+                else
+                    baseOffsets[i] = fallback;
+            }
+        }
+
+        private static void CopyWallInstanceParameters(Wall source, Wall target)
+        {
+            if (source == null || target == null)
+                return;
+
+            string[] copyNames =
+            {
+                "Comments", "Mark", "Fire Rating", "Type Mark", "Workset",
+                "Phase Created", "Phase Demolished"
+            };
+
+            foreach (string name in copyNames)
+            {
+                try
+                {
+                    Parameter src = source.LookupParameter(name);
+                    Parameter dst = target.LookupParameter(name);
+                    if (src == null || dst == null || dst.IsReadOnly || !src.HasValue)
+                        continue;
+
+                    switch (src.StorageType)
+                    {
+                        case StorageType.Double:
+                            dst.Set(src.AsDouble());
+                            break;
+                        case StorageType.Integer:
+                            dst.Set(src.AsInteger());
+                            break;
+                        case StorageType.String:
+                            dst.Set(src.AsString());
+                            break;
+                        case StorageType.ElementId:
+                            dst.Set(src.AsElementId());
+                            break;
+                    }
+                }
+                catch { }
+            }
+        }
+
+        private static double HorizontalDistance(double x1, double y1, double x2, double y2)
+        {
+            double dx = x2 - x1;
+            double dy = y2 - y1;
+            return Math.Sqrt(dx * dx + dy * dy);
         }
 
         /// <summary>

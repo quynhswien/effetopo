@@ -17,8 +17,8 @@
             <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Grid.Row="0" FontSize="18" FontWeight="SemiBold" Text="Divide Boundary Points Along Curves"/>
-        <TextBlock Grid.Row="1" Margin="0,8,0,16" TextWrapping="Wrap">
+        <TextBlock x:Name="TitleTextBlock" Grid.Row="0" FontSize="18" FontWeight="SemiBold" Text="Divide Boundary Points Along Curves"/>
+        <TextBlock x:Name="DescriptionTextBlock" Grid.Row="1" Margin="0,8,0,16" TextWrapping="Wrap">
             Choose how to add elevation points along each floor boundary line or arc.
             Corner junction points are handled separately.
         </TextBlock>

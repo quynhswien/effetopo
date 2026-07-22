@@ -11,10 +11,19 @@ namespace effetopo.Views
 
         public FloorBoundarySamplingOptions? SelectedOptions { get; private set; }
 
-        public FloorBoundarySamplingDialog(bool useMillimeters, FloorBoundarySamplingSettings? initialSettings = null)
+        public FloorBoundarySamplingDialog(bool useMillimeters, FloorBoundarySamplingSettings? initialSettings = null, bool isWallMode = false)
         {
             InitializeComponent();
             _useMillimeters = useMillimeters;
+
+            if (isWallMode)
+            {
+                Title = "Wall Path Point Division";
+                TitleTextBlock.Text = "Divide Points Along Wall Path";
+                DescriptionTextBlock.Text =
+                    "Choose how to sample the wall location curve. The wall height stays the same; each segment base follows the Toposolid.";
+                AddTopoInteriorPointsCheckBox.Visibility = System.Windows.Visibility.Collapsed;
+            }
 
             if (_useMillimeters)
             {

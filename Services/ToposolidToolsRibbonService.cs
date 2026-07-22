@@ -21,6 +21,7 @@ namespace effetopo.Services
             [JoinMultipleToposolidsCommand.COMMAND_NAME] = typeof(JoinMultipleToposolidsCommand),
             [MergeProposalToposolidCommand.COMMAND_NAME] = typeof(MergeProposalToposolidCommand),
             [FloorFollowTopoCommand.COMMAND_NAME] = typeof(FloorFollowTopoCommand),
+            [WallFollowTopoCommand.COMMAND_NAME] = typeof(WallFollowTopoCommand),
             [ModifyTopoCommand.COMMAND_NAME] = typeof(ModifyTopoCommand),
             [SetElevationCommand.COMMAND_NAME] = typeof(SetElevationCommand),
             [CreateContourLineCommand.COMMAND_NAME] = typeof(CreateContourLineCommand),
@@ -180,6 +181,11 @@ namespace effetopo.Services
                     FloorFollowTopoCommand.COMMAND_NAME,
                     "Floor Follow\nTopo",
                     "Floor Follow Toposolid\nMake Floor follow Toposolid surface elevation",
+                    isFloorCommand: true),
+                new ToposolidToolDefinition(
+                    WallFollowTopoCommand.COMMAND_NAME,
+                    "Wall Follow\nTopo",
+                    "Wall Follow Toposolid\nMake Wall base follow Toposolid while keeping wall height",
                     isFloorCommand: true),
                 new ToposolidToolDefinition(
                     ModifyTopoCommand.COMMAND_NAME,
