@@ -2431,7 +2431,7 @@ namespace effetopo.Services
             var surveyCoords = new SurveyCoordinateHelper(doc);
             BoundingBoxXYZ topoBbox = toposolid.get_BoundingBox(null);
             double rayOriginZ = (topoBbox?.Max.Z ?? level.Elevation) + 30.0;
-            var topoElevationProvider = new TopoSurfaceElevationProvider(topoTriangles, rayOriginZ, surveyCoords);
+            var spatialGrid = new SpatialGrid(topoTriangles, cellSize: 10.0);
 
             double wallHeight = GetWallUnconnectedHeight(wall);
             bool flipped = wall.Flipped;
@@ -2439,32 +2439,138 @@ namespace effetopo.Services
             ElementId wallTypeId = wall.WallType.Id;
             ElementId levelId = wall.LevelId;
             double levelElevation = level.Elevation;
-            double curveZ = levelElevation;
+            WallFollowTopoMode followMode = sampling.WallFollowMode;
 
-            var baseOffsets = new double[samplePoints.Count];
+            Log.Information(
+                "Wall follow topo: mode={Mode}, level Z={Level:F3} ft, wall height={Height:F3} ft",
+                followMode, levelElevation, wallHeight);
+
+            var topoModelZs = new double[samplePoints.Count];
             int skippedSamples = 0;
 
             for (int i = 0; i < samplePoints.Count; i++)
             {
                 XYZ pt = samplePoints[i];
-                double? topoSurvey = topoElevationProvider.GetTopSurfaceSurveyElevation(pt.X, pt.Y, this);
-                if (!topoSurvey.HasValue)
+                double? topoModelZ = GetElevationAtPointOptimized(
+                    new XYZ(pt.X, pt.Y, rayOriginZ), spatialGrid);
+                if (!topoModelZ.HasValue)
                 {
                     skippedSamples++;
-                    baseOffsets[i] = double.NaN;
+                    topoModelZs[i] = double.NaN;
                     continue;
                 }
 
-                double targetModelZ = surveyCoords.IsAvailable
-                    ? surveyCoords.SurveyElevationToModelZ(pt.X, pt.Y, topoSurvey.Value)
-                    : topoSurvey.Value;
-                baseOffsets[i] = targetModelZ - levelElevation;
+                topoModelZs[i] = topoModelZ.Value;
             }
 
-            FillMissingWallBaseOffsets(baseOffsets, wall);
+            FillMissingWallTopoModelZs(topoModelZs, wall, levelElevation);
+
+            if (!double.IsNaN(topoModelZs[0]))
+            {
+                double surveyZ = surveyCoords.IsAvailable
+                    ? surveyCoords.ModelZToSurveyElevationPublic(
+                        samplePoints[0].X, samplePoints[0].Y, topoModelZs[0])
+                    : topoModelZs[0];
+                Log.Information(
+                    "Wall follow sample 0: topo model Z={ModelZ:F3} ft, survey={Survey:F3} ft, top Z={Top:F3} ft",
+                    topoModelZs[0], surveyZ, topoModelZs[0] + wallHeight);
+            }
+
+            List<WallTopoProfileService.ArchivedWallParameter> archivedParams =
+                WallTopoProfileService.ArchiveWallParameters(wall);
 
             var createdWalls = new List<Wall>();
+            bool originalWallKept = false;
+
+            if (followMode == WallFollowTopoMode.SlopeTopOnTopo)
+            {
+                createdWalls = CreateSlopeProfileWalls(
+                    doc, wall, sourceCurve, samplePoints, topoModelZs, wallHeight,
+                    wallTypeId, levelId, flipped, structural, archivedParams, out originalWallKept);
+            }
+            else
+            {
+                createdWalls = CreateStepSegmentWalls(
+                    doc, wall, samplePoints, topoModelZs, wallHeight, levelElevation,
+                    wallTypeId, levelId, flipped, structural, archivedParams);
+            }
+
+            if (createdWalls.Count == 0 && !originalWallKept)
+                throw new InvalidOperationException("No wall segments could be created along the sampled path.");
+
+            if (!originalWallKept)
+            {
+                try
+                {
+                    doc.Delete(wall.Id);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Could not delete original wall {Id}", GetElementIdValue(wall.Id));
+                }
+            }
+
+            LastWallFollowSegmentsCreated = createdWalls.Count;
+            LastWallFollowSamplePointsSkipped = skippedSamples;
+
+            Log.Information(
+                "Wall follow topo complete: {Segments} wall(s), mode {Mode}, {Skipped} samples skipped, keptOriginal={Kept}",
+                createdWalls.Count, followMode, skippedSamples, originalWallKept);
+
+            return createdWalls;
+#endif
+        }
+
+        private static List<Wall> CreateSlopeProfileWalls(
+            Document doc,
+            Wall sourceWall,
+            Curve sourceCurve,
+            List<XYZ> samplePoints,
+            double[] bottomModelZ,
+            double wallHeight,
+            ElementId wallTypeId,
+            ElementId levelId,
+            bool flipped,
+            bool structural,
+            List<WallTopoProfileService.ArchivedWallParameter> archivedParams,
+            out bool originalWallKept)
+        {
+            originalWallKept = false;
+            var result = new List<Wall>();
             const double minSegmentLength = 0.05;
+
+            if (WallTopoProfileService.IsStraightPath(sourceCurve, out Line wallLine))
+            {
+                IList<Curve> fullProfile = WallTopoProfileService.BuildTopoFollowProfile(
+                    samplePoints, bottomModelZ, wallHeight);
+                if (fullProfile.Count >= 3)
+                {
+                    if (WallTopoProfileService.TryEditWallElevationProfile(sourceWall, fullProfile))
+                    {
+                        WallTopoProfileService.RestoreWallParameters(sourceWall, archivedParams);
+                        originalWallKept = true;
+                        result.Add(sourceWall);
+                        Log.Information(
+                            "Wall follow topo: updated elevation profile on existing straight wall {Id}",
+                            sourceWall.Id.Value);
+                        return result;
+                    }
+
+                    XYZ normal = WallTopoProfileService.ComputeProfileWallNormal(
+                        wallLine.GetEndPoint(0), wallLine.GetEndPoint(1), flipped);
+                    Wall profileWall = WallTopoProfileService.TryCreateProfileWall(
+                        doc, fullProfile, wallTypeId, levelId, normal, structural);
+                    if (profileWall != null)
+                    {
+                        WallTopoProfileService.RestoreWallParameters(profileWall, archivedParams);
+                        result.Add(profileWall);
+                        Log.Information(
+                            "Wall follow topo: created single profile wall with {Points} topo samples",
+                            samplePoints.Count);
+                        return result;
+                    }
+                }
+            }
 
             for (int i = 0; i < samplePoints.Count - 1; i++)
             {
@@ -2473,65 +2579,81 @@ namespace effetopo.Services
                 if (p0 == null || p1 == null)
                     continue;
 
-                double segLength = HorizontalDistance(p0.X, p0.Y, p1.X, p1.Y);
-                if (segLength < minSegmentLength)
+                if (HorizontalDistance(p0.X, p0.Y, p1.X, p1.Y) < minSegmentLength)
                     continue;
 
-                double offset0 = baseOffsets[i];
-                double offset1 = baseOffsets[i + 1];
-                double segmentOffset = (offset0 + offset1) * 0.5;
+                IList<Curve> segmentProfile = WallTopoProfileService.BuildSegmentProfile(
+                    p0, p1, bottomModelZ[i], bottomModelZ[i + 1], wallHeight);
+                XYZ normal = WallTopoProfileService.ComputeProfileWallNormal(p0, p1, flipped);
+                Wall segment = WallTopoProfileService.TryCreateProfileWall(
+                    doc, segmentProfile, wallTypeId, levelId, normal, structural);
+                if (segment == null)
+                    continue;
+
+                WallTopoProfileService.RestoreWallParameters(segment, archivedParams);
+                result.Add(segment);
+            }
+
+            return result;
+        }
+
+        private static List<Wall> CreateStepSegmentWalls(
+            Document doc,
+            Wall sourceWall,
+            List<XYZ> samplePoints,
+            double[] topoModelZs,
+            double wallHeight,
+            double levelElevation,
+            ElementId wallTypeId,
+            ElementId levelId,
+            bool flipped,
+            bool structural,
+            List<WallTopoProfileService.ArchivedWallParameter> archivedParams)
+        {
+            var createdWalls = new List<Wall>();
+            const double minSegmentLength = 0.05;
+            const double minWallHeight = 0.1;
+
+            for (int i = 0; i < samplePoints.Count - 1; i++)
+            {
+                XYZ p0 = samplePoints[i];
+                XYZ p1 = samplePoints[i + 1];
+                if (p0 == null || p1 == null)
+                    continue;
+
+                if (HorizontalDistance(p0.X, p0.Y, p1.X, p1.Y) < minSegmentLength)
+                    continue;
+
+                double topo0 = topoModelZs[i];
+                double topo1 = topoModelZs[i + 1];
+                double segmentOffset = ((topo0 + topo1) * 0.5) - levelElevation;
+                double segmentHeight = wallHeight;
+                if (segmentHeight < minWallHeight)
+                    segmentHeight = minWallHeight;
 
                 Curve segmentCurve = Line.CreateBound(
-                    new XYZ(p0.X, p0.Y, curveZ),
-                    new XYZ(p1.X, p1.Y, curveZ));
+                    new XYZ(p0.X, p0.Y, 0),
+                    new XYZ(p1.X, p1.Y, 0));
 
                 try
                 {
                     Wall segment = Wall.Create(
-                        doc,
-                        segmentCurve,
-                        wallTypeId,
-                        levelId,
-                        wallHeight,
-                        segmentOffset,
-                        flipped,
-                        structural);
-
+                        doc, segmentCurve, wallTypeId, levelId,
+                        segmentHeight, segmentOffset, flipped, structural);
                     if (segment == null)
                         continue;
 
-                    CopyWallInstanceParameters(wall, segment);
+                    WallTopoProfileService.RestoreWallParameters(segment, archivedParams);
                     createdWalls.Add(segment);
                 }
                 catch (Exception ex)
                 {
                     Log.Debug(
-                        "Could not create wall segment {Index} at ({X0},{Y0})-({X1},{Y1}): {Error}",
-                        i, p0.X, p0.Y, p1.X, p1.Y, ex.Message);
+                        "Could not create step wall segment {Index}: {Error}", i, ex.Message);
                 }
             }
 
-            if (createdWalls.Count == 0)
-                throw new InvalidOperationException("No wall segments could be created along the sampled path.");
-
-            try
-            {
-                doc.Delete(wall.Id);
-            }
-            catch (Exception ex)
-            {
-                Log.Warning(ex, "Could not delete original wall {Id}", GetElementIdValue(wall.Id));
-            }
-
-            LastWallFollowSegmentsCreated = createdWalls.Count;
-            LastWallFollowSamplePointsSkipped = skippedSamples;
-
-            Log.Information(
-                "Wall follow topo complete: {Segments} segments, {Skipped} samples skipped",
-                createdWalls.Count, skippedSamples);
-
             return createdWalls;
-#endif
         }
 
         private static double GetWallUnconnectedHeight(Wall wall)
@@ -2571,6 +2693,23 @@ namespace effetopo.Services
             }
         }
 
+        private static void FillMissingWallTopoModelZs(double[] topoModelZs, Wall wall, double levelElevation)
+        {
+            if (topoModelZs == null || topoModelZs.Length == 0)
+                return;
+
+            double fallback = levelElevation;
+            try
+            {
+                Parameter offsetParam = wall.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET);
+                if (offsetParam != null && offsetParam.HasValue)
+                    fallback = levelElevation + offsetParam.AsDouble();
+            }
+            catch { }
+
+            FillMissingWallSamples(topoModelZs, fallback);
+        }
+
         private static void FillMissingWallBaseOffsets(double[] baseOffsets, Wall wall)
         {
             if (baseOffsets == null || baseOffsets.Length == 0)
@@ -2585,72 +2724,41 @@ namespace effetopo.Services
             }
             catch { }
 
-            for (int i = 0; i < baseOffsets.Length; i++)
+            FillMissingWallSamples(baseOffsets, fallback);
+        }
+
+        private static void FillMissingWallSamples(double[] values, double fallback)
+        {
+            for (int i = 0; i < values.Length; i++)
             {
-                if (!double.IsNaN(baseOffsets[i]))
+                if (!double.IsNaN(values[i]))
                     continue;
 
                 double prev = double.NaN;
                 double next = double.NaN;
                 for (int j = i - 1; j >= 0; j--)
                 {
-                    if (!double.IsNaN(baseOffsets[j])) { prev = baseOffsets[j]; break; }
+                    if (!double.IsNaN(values[j])) { prev = values[j]; break; }
                 }
-                for (int j = i + 1; j < baseOffsets.Length; j++)
+                for (int j = i + 1; j < values.Length; j++)
                 {
-                    if (!double.IsNaN(baseOffsets[j])) { next = baseOffsets[j]; break; }
+                    if (!double.IsNaN(values[j])) { next = values[j]; break; }
                 }
 
                 if (!double.IsNaN(prev) && !double.IsNaN(next))
-                    baseOffsets[i] = (prev + next) * 0.5;
+                    values[i] = (prev + next) * 0.5;
                 else if (!double.IsNaN(prev))
-                    baseOffsets[i] = prev;
+                    values[i] = prev;
                 else if (!double.IsNaN(next))
-                    baseOffsets[i] = next;
+                    values[i] = next;
                 else
-                    baseOffsets[i] = fallback;
+                    values[i] = fallback;
             }
         }
 
-        private static void CopyWallInstanceParameters(Wall source, Wall target)
-        {
-            if (source == null || target == null)
-                return;
-
-            string[] copyNames =
-            {
-                "Comments", "Mark", "Fire Rating", "Type Mark", "Workset",
-                "Phase Created", "Phase Demolished"
-            };
-
-            foreach (string name in copyNames)
-            {
-                try
-                {
-                    Parameter src = source.LookupParameter(name);
-                    Parameter dst = target.LookupParameter(name);
-                    if (src == null || dst == null || dst.IsReadOnly || !src.HasValue)
-                        continue;
-
-                    switch (src.StorageType)
-                    {
-                        case StorageType.Double:
-                            dst.Set(src.AsDouble());
-                            break;
-                        case StorageType.Integer:
-                            dst.Set(src.AsInteger());
-                            break;
-                        case StorageType.String:
-                            dst.Set(src.AsString());
-                            break;
-                        case StorageType.ElementId:
-                            dst.Set(src.AsElementId());
-                            break;
-                    }
-                }
-                catch { }
-            }
-        }
+        private static void CopyWallInstanceParameters(Wall source, Wall target) =>
+            WallTopoProfileService.RestoreWallParameters(
+                target, WallTopoProfileService.ArchiveWallParameters(source));
 
         private static double HorizontalDistance(double x1, double y1, double x2, double y2)
         {

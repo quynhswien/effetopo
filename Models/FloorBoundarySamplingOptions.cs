@@ -24,6 +24,9 @@ namespace effetopo.Models
         /// <summary>When true, add Toposolid points inside the Floor boundary. When false, only boundary curve + corner points.</summary>
         public bool AddToposolidPointsWithinBoundary { get; set; } = true;
 
+        /// <summary>Wall follow mode (ignored for Floor follow).</summary>
+        public WallFollowTopoMode WallFollowMode { get; set; } = WallFollowTopoMode.SlopeTopOnTopo;
+
         public static FloorBoundarySamplingOptions Default => new FloorBoundarySamplingOptions();
     }
 }

@@ -61,6 +61,20 @@
                 </StackPanel>
             </Border>
 
+            <Border x:Name="WallFollowModePanel" Margin="0,0,0,12" Padding="12" BorderBrush="#CCC" BorderThickness="1" CornerRadius="4" Visibility="Collapsed">
+                <StackPanel>
+                    <TextBlock FontSize="14" FontWeight="SemiBold" Text="Wall follow mode"/>
+                    <RadioButton x:Name="WallSlopeModeOption" GroupName="WallFollowMode" IsChecked="True" Margin="0,8,0,4"
+                                 Content="Slope — top and bottom follow Toposolid (profile wall)"/>
+                    <TextBlock Margin="24,0,0,8" TextWrapping="Wrap" Foreground="#555" FontSize="13"
+                               Text="Builds a vertical profile from topo samples: bottom on surface, top offset by wall height. Tries to edit the existing wall profile first."/>
+                    <RadioButton x:Name="WallStepModeOption" GroupName="WallFollowMode" Margin="0,0,0,4"
+                                 Content="Step — constant height, base follows Toposolid"/>
+                    <TextBlock Margin="24,0,0,0" TextWrapping="Wrap" Foreground="#555" FontSize="13"
+                               Text="Horizontal segments with the same height; base elevation steps with the topo."/>
+                </StackPanel>
+            </Border>
+
             <Border Margin="0,16,0,0" Padding="12" BorderBrush="#CCC" BorderThickness="1" CornerRadius="4">
                 <StackPanel>
                     <CheckBox x:Name="AddTopoInteriorPointsCheckBox" IsChecked="True" FontSize="14"

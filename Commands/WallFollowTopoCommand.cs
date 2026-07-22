@@ -155,8 +155,12 @@ namespace effetopo.Commands
                         if (ids.Count > 0)
                             uidoc.Selection.SetElementIds(ids);
 
-                        string successMessage =
-                            $"Successfully updated Wall to follow Toposolid surface.\n\n" +
+                string modeLabel = sampling.WallFollowMode == WallFollowTopoMode.SlopeTopOnTopo
+                    ? "Slope (top on topo)"
+                    : "Step (fixed height)";
+                string successMessage =
+                    $"Successfully updated Wall to follow Toposolid surface.\n" +
+                    $"Mode: {modeLabel}\n\n" +
                             $"Statistics:\n" +
                             $"• Wall segments created: {mergeService.LastWallFollowSegmentsCreated}\n" +
                             $"• Sample points skipped (no topo hit): {mergeService.LastWallFollowSamplePointsSkipped}";

@@ -30,6 +30,8 @@ namespace effetopo.Models
 
         public bool AddToposolidPointsWithinBoundary { get; set; } = true;
 
+        public WallFollowTopoMode WallFollowMode { get; set; } = WallFollowTopoMode.SlopeTopOnTopo;
+
         public FloorBoundarySamplingOptions ToOptions()
         {
             return new FloorBoundarySamplingOptions
@@ -37,7 +39,8 @@ namespace effetopo.Models
                 Mode = Mode,
                 SpacingFeet = SpacingFeet,
                 SegmentsPerCurve = SegmentsPerCurve,
-                AddToposolidPointsWithinBoundary = AddToposolidPointsWithinBoundary
+                AddToposolidPointsWithinBoundary = AddToposolidPointsWithinBoundary,
+                WallFollowMode = WallFollowMode
             };
         }
     }

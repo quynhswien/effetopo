@@ -21,8 +21,9 @@ namespace effetopo.Views
                 Title = "Wall Path Point Division";
                 TitleTextBlock.Text = "Divide Points Along Wall Path";
                 DescriptionTextBlock.Text =
-                    "Choose how to sample the wall location curve. The wall height stays the same; each segment base follows the Toposolid.";
+                    "Choose how to sample the wall location curve and how the wall should follow the Toposolid.";
                 AddTopoInteriorPointsCheckBox.Visibility = System.Windows.Visibility.Collapsed;
+                WallFollowModePanel.Visibility = System.Windows.Visibility.Visible;
             }
 
             if (_useMillimeters)
@@ -67,6 +68,8 @@ namespace effetopo.Views
         private void ApplySettings(FloorBoundarySamplingSettings settings)
         {
             AddTopoInteriorPointsCheckBox.IsChecked = settings.AddToposolidPointsWithinBoundary;
+            WallSlopeModeOption.IsChecked = settings.WallFollowMode != WallFollowTopoMode.StepFixedHeight;
+            WallStepModeOption.IsChecked = settings.WallFollowMode == WallFollowTopoMode.StepFixedHeight;
 
             if (settings.Mode == BoundarySampleMode.BySegmentCount)
             {
@@ -130,7 +133,10 @@ namespace effetopo.Views
         {
             var settings = new FloorBoundarySamplingSettings
             {
-                AddToposolidPointsWithinBoundary = AddTopoInteriorPointsCheckBox.IsChecked == true
+                AddToposolidPointsWithinBoundary = AddTopoInteriorPointsCheckBox.IsChecked == true,
+                WallFollowMode = WallStepModeOption.IsChecked == true
+                    ? WallFollowTopoMode.StepFixedHeight
+                    : WallFollowTopoMode.SlopeTopOnTopo
             };
 
             if (CountModeOption.IsChecked == true)
