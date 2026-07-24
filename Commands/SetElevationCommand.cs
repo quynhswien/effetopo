@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Linq;
 using Autodesk.Revit.Attributes;
 using Autodesk.Revit.DB;
@@ -136,7 +137,7 @@ namespace effetopo.Commands
                 {
                     appliedCount++;
                     sequenceIndex++;
-                    uidoc.Selection.SetElementIds(new System.Collections.Generic.List<ElementId> { modelCurve.Id });
+                    uidoc.Selection.SetElementIds(new List<ElementId> { modelCurve.Id });
                     uidoc.RefreshActiveView();
                 }
                 else if (!string.IsNullOrEmpty(result.Message))
@@ -187,76 +188,110 @@ namespace effetopo.Commands
             int sequenceIndex = sourceRecord?.SequenceOrder ?? projectData.NextSequenceIndex;
             string elevationHint = FormatElevation(doc, sourceElevationFeet);
 
-            uidoc.Selection.SetElementIds(new System.Collections.Generic.List<ElementId> { sourceCurve.Id });
+            uidoc.Selection.SetElementIds(new List<ElementId> { sourceCurve.Id });
             uidoc.RefreshActiveView();
 
-            int appliedCount = 0;
-            while (true)
+            IList<Reference> targetRefs;
+            try
             {
-                Reference targetRef;
+                targetRefs = uidoc.Selection.PickObjects(
+                    ObjectType.Element,
+                    new ModelCurveSelectionFilter(excludeId: sourceCurve.Id),
+                    $"Match Elevation: select one or more target lines (source elevation: {elevationHint}), then Finish.");
+            }
+            catch (Exception ex) when (IsUserCancel(ex))
+            {
+                Log.Information("Match Elevation cancelled while picking targets");
+                return Result.Cancelled;
+            }
+
+            if (targetRefs == null || targetRefs.Count == 0)
+            {
+                RevitNotificationHandler.ShowGeneralMessageDialog("Match Elevation",
+                    "No target lines were selected.");
+                return Result.Cancelled;
+            }
+
+            var targets = new List<ModelCurve>();
+            var seenIds = new HashSet<long> { sourceId };
+            foreach (Reference targetRef in targetRefs)
+            {
+                Element element = doc.GetElement(targetRef);
+                if (!(element is ModelCurve targetCurve) || !IsSupportedCurve(targetCurve))
+                    continue;
+
+                long targetId = GetElementIdValue(targetCurve.Id);
+                if (!seenIds.Add(targetId))
+                    continue;
+
+                targets.Add(targetCurve);
+            }
+
+            if (targets.Count == 0)
+            {
+                RevitNotificationHandler.ShowGeneralMessageDialog("Match Elevation",
+                    "No valid target model lines or splines were selected.");
+                return Result.Failed;
+            }
+
+            int appliedCount = 0;
+            var failedMessages = new List<string>();
+
+            using (Transaction tx = new Transaction(doc, "Match Elevation"))
+            {
+                tx.Start();
                 try
                 {
-                    targetRef = uidoc.Selection.PickObject(
-                        ObjectType.Element,
-                        new ModelCurveSelectionFilter(excludeId: sourceCurve.Id),
-                        $"Match Elevation: click a target line (source elevation: {elevationHint}). Press Esc to finish.");
-                }
-                catch (Exception ex) when (IsUserCancel(ex))
-                {
-                    break;
-                }
-
-                if (targetRef == null)
-                    break;
-
-                if (!TryGetSupportedModelCurve(doc, targetRef, out ModelCurve targetCurve))
-                    continue;
-
-                if (targetCurve.Id == sourceCurve.Id)
-                {
-                    RevitNotificationHandler.ShowGeneralMessageDialog("Match Elevation",
-                        "Pick a different line than the source.");
-                    continue;
-                }
-
-                SetElevationLineResult result;
-                using (Transaction tx = new Transaction(doc, "Match Elevation"))
-                {
-                    tx.Start();
-                    try
+                    foreach (ModelCurve targetCurve in targets)
                     {
-                        result = SetElevationService.Instance.ApplyMatch(
+                        SetElevationLineResult result = SetElevationService.Instance.ApplyMatch(
                             doc, activeView, targetCurve, options, projectData,
                             sourceElevationFeet, sequenceIndex);
+
+                        if (result.Success)
+                            appliedCount++;
+                        else if (!string.IsNullOrEmpty(result.Message))
+                            failedMessages.Add($"Curve {result.ElementId}: {result.Message}");
+                    }
+
+                    if (appliedCount > 0)
+                    {
                         SetElevationDataService.Instance.Save(
                             doc, projectData, includeProjectMetadata: true, includeLocalFile: false);
                         doc.Regenerate();
                         tx.Commit();
                     }
-                    catch (Exception ex)
+                    else
                     {
-                        Log.Error(ex, "Match Elevation click failed");
-                        if (tx.HasStarted())
-                            tx.RollBack();
-                        RevitNotificationHandler.ShowGeneralMessageDialog("Error",
-                            $"Failed to match elevation:\n{ex.Message}");
-                        continue;
+                        tx.RollBack();
                     }
                 }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Match Elevation batch failed");
+                    if (tx.HasStarted())
+                        tx.RollBack();
+                    RevitNotificationHandler.ShowGeneralMessageDialog("Error",
+                        $"Failed to match elevation:\n{ex.Message}");
+                    return Result.Failed;
+                }
+            }
 
+            if (appliedCount > 0)
+            {
                 SetElevationDataService.Instance.Save(
                     doc, projectData, includeProjectMetadata: false, includeLocalFile: true);
+                uidoc.Selection.SetElementIds(targets.Select(t => t.Id).ToList());
+                uidoc.RefreshActiveView();
+            }
 
-                if (result.Success)
-                {
-                    appliedCount++;
-                    uidoc.Selection.SetElementIds(new System.Collections.Generic.List<ElementId> { targetCurve.Id });
-                    uidoc.RefreshActiveView();
-                }
-                else if (!string.IsNullOrEmpty(result.Message))
-                {
-                    RevitNotificationHandler.ShowGeneralMessageDialog("Match Elevation", result.Message);
-                }
+            if (failedMessages.Count > 0)
+            {
+                string detail = string.Join("\n", failedMessages.Take(8));
+                if (failedMessages.Count > 8)
+                    detail += $"\n…and {failedMessages.Count - 8} more.";
+                RevitNotificationHandler.ShowGeneralMessageDialog("Match Elevation",
+                    $"Some targets could not be updated:\n{detail}");
             }
 
             return FinishWithSummary(activeView, options, projectData, appliedCount, "Match Elevation Complete");
@@ -307,7 +342,7 @@ namespace effetopo.Commands
 
         private static void EnsureSequenceIndex(SetElevationProjectData projectData)
         {
-            projectData.Lines ??= new System.Collections.Generic.List<SetElevationLineRecord>();
+            projectData.Lines ??= new List<SetElevationLineRecord>();
 
             if (projectData.Lines.Count == 0)
             {
