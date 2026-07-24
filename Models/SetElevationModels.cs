@@ -16,6 +16,15 @@ namespace effetopo.Models
     }
 
     /// <summary>
+    /// Which workflow the Set Elevation dialog requested.
+    /// </summary>
+    public enum SetElevationMode
+    {
+        Set,
+        Match
+    }
+
+    /// <summary>
     /// Persisted UI settings for the Set Elevation dialog.
     /// </summary>
     public class SetElevationSettings

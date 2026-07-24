@@ -20,6 +20,8 @@ namespace effetopo.Views
 
         public SetElevationOptions? SelectedOptions { get; private set; }
 
+        public SetElevationMode SelectedMode { get; private set; } = SetElevationMode.Set;
+
         private static readonly IReadOnlyList<ColorOption> ColorOptions = new[]
         {
             new ColorOption("Orange", 255, 128, 0),
@@ -177,12 +179,19 @@ namespace effetopo.Views
             TextTypeCombo.IsEnabled = AddLabelCheckBox.IsChecked == true;
         }
 
-        private void Ok_Click(object sender, RoutedEventArgs e)
+        private void Ok_Click(object sender, RoutedEventArgs e) =>
+            ConfirmAndClose(SetElevationMode.Set);
+
+        private void MatchElevation_Click(object sender, RoutedEventArgs e) =>
+            ConfirmAndClose(SetElevationMode.Match);
+
+        private void ConfirmAndClose(SetElevationMode mode)
         {
             try
             {
                 var settings = BuildSettingsFromUi();
                 SelectedOptions = settings.ToOptions(_useMillimeters);
+                SelectedMode = mode;
                 Services.SetElevationSettingsService.Instance.Save(settings);
                 DialogResult = true;
                 Close();

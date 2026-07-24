@@ -5,10 +5,10 @@
     ResizeMode="CanResizeWithGrip"
     WindowStartupLocation="CenterScreen"
     Title="Set Elevation"
-    Height="520"
-    Width="520"
-    MinHeight="480"
-    MinWidth="460">
+    Height="540"
+    Width="540"
+    MinHeight="500"
+    MinWidth="480">
     <Grid Margin="16">
         <Grid.RowDefinitions>
             <RowDefinition Height="Auto"/>
@@ -18,7 +18,7 @@
 
         <TextBlock Grid.Row="0" FontSize="18" FontWeight="SemiBold" Text="Set Elevation"/>
         <TextBlock Grid.Row="0" Margin="0,28,0,16" TextWrapping="Wrap" Foreground="#555"
-                   Text="Click model lines or splines one at a time. Each click applies the next elevation (Start + Increment). Labels and data are saved automatically."/>
+                   Text="OK: click lines one at a time — each click applies the next elevation (Start + Increment). Match Elevation: pick a source line, then click targets to copy its elevation. Labels and data are saved automatically."/>
 
         <StackPanel Grid.Row="1">
             <CheckBox x:Name="AddLabelCheckBox" Margin="0,0,0,12" Content="Add Label"/>
@@ -63,6 +63,7 @@
         </StackPanel>
 
         <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,16,0,0">
+            <Button Width="120" Margin="0,0,10,0" Click="MatchElevation_Click">Match Elevation</Button>
             <Button Width="90" Margin="0,0,10,0" IsDefault="True" Click="Ok_Click">OK</Button>
             <Button Width="90" IsCancel="True" Click="Cancel_Click">Cancel</Button>
         </StackPanel>

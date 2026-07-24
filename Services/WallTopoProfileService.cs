@@ -25,7 +25,19 @@ namespace effetopo.Services
             BuiltInParameter.WALL_TOP_OFFSET,
             BuiltInParameter.WALL_TOP_EXTENSION_DIST_PARAM,
             BuiltInParameter.WALL_BOTTOM_EXTENSION_DIST_PARAM,
-            BuiltInParameter.WALL_CROSS_SECTION
+            BuiltInParameter.WALL_CROSS_SECTION,
+            BuiltInParameter.INSTANCE_ELEVATION_PARAM,
+            BuiltInParameter.SCHEDULE_LEVEL_PARAM,
+            BuiltInParameter.WALL_BASE_CONSTRAINT
+        };
+
+        private static readonly string[] SkipRestoreNameFragments =
+        {
+            "offset",
+            "height",
+            "elevation",
+            "extension",
+            "constraint"
         };
 
         internal sealed class ArchivedWallParameter
@@ -85,7 +97,17 @@ namespace effetopo.Services
             return list;
         }
 
-        public static void RestoreWallParameters(Wall target, IEnumerable<ArchivedWallParameter> archive)
+        public static void RestoreWallParameters(Wall target, IEnumerable<ArchivedWallParameter> archive) =>
+            RestoreWallParameters(target, archive, preserveVerticalPlacement: false);
+
+        /// <summary>
+        /// Restores copied instance parameters. When <paramref name="preserveVerticalPlacement"/> is true,
+        /// skips offset/height/elevation so geometry from Wall.Create or elevation profile is not shifted twice.
+        /// </summary>
+        public static void RestoreWallParameters(
+            Wall target,
+            IEnumerable<ArchivedWallParameter> archive,
+            bool preserveVerticalPlacement)
         {
             if (target == null || archive == null)
                 return;
@@ -94,6 +116,9 @@ namespace effetopo.Services
             {
                 try
                 {
+                    if (preserveVerticalPlacement && ShouldSkipVerticalRestore(entry))
+                        continue;
+
                     if (entry.BuiltIn.HasValue && SkipRestoreBuiltIns.Contains(entry.BuiltIn.Value))
                         continue;
 
@@ -123,6 +148,48 @@ namespace effetopo.Services
                 {
                     Log.Debug("Could not restore wall parameter {Name}: {Error}", entry.Name, ex.Message);
                 }
+            }
+        }
+
+        private static bool ShouldSkipVerticalRestore(ArchivedWallParameter entry)
+        {
+            if (entry == null)
+                return false;
+
+            if (entry.BuiltIn.HasValue && SkipRestoreBuiltIns.Contains(entry.BuiltIn.Value))
+                return true;
+
+            if (string.IsNullOrEmpty(entry.Name))
+                return false;
+
+            string name = entry.Name;
+            foreach (string fragment in SkipRestoreNameFragments)
+            {
+                if (name.IndexOf(fragment, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return true;
+            }
+
+            return false;
+        }
+
+        /// <summary>
+        /// Profile walls encode bottom elevation in the profile curves (global model Z).
+        /// Base offset must be zero or Revit shifts the wall up by (topo − level) again.
+        /// </summary>
+        public static void ResetWallBaseOffset(Wall wall, double baseOffsetFeet)
+        {
+            if (wall == null)
+                return;
+
+            try
+            {
+                Parameter baseOffset = wall.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET);
+                if (baseOffset != null && !baseOffset.IsReadOnly)
+                    baseOffset.Set(baseOffsetFeet);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Could not reset wall base offset: {Error}", ex.Message);
             }
         }
 

@@ -40,13 +40,84 @@ namespace effetopo.Services
             SetElevationProjectData projectData,
             int sequenceIndex)
         {
+            double elevationFeet = options.StartElevationFeet + sequenceIndex * options.IncrementFeet;
+            return ApplyAtElevation(
+                doc, view, modelCurve, options, projectData, elevationFeet, sequenceIndex,
+                advanceSequence: true);
+        }
+
+        /// <summary>
+        /// Copies a display elevation onto a target model curve (Match Elevation).
+        /// </summary>
+        public SetElevationLineResult ApplyMatch(
+            Document doc,
+            View view,
+            ModelCurve modelCurve,
+            SetElevationOptions options,
+            SetElevationProjectData projectData,
+            double elevationFeet,
+            int sequenceIndex)
+        {
+            return ApplyAtElevation(
+                doc, view, modelCurve, options, projectData, elevationFeet, sequenceIndex,
+                advanceSequence: false);
+        }
+
+        /// <summary>
+        /// Reads the display elevation of a model curve for the given elevation base.
+        /// Prefers a stored Set Elevation record when present.
+        /// </summary>
+        public bool TryGetCurveDisplayElevation(
+            Document doc,
+            View view,
+            ModelCurve modelCurve,
+            ElevationBaseType elevationBase,
+            SetElevationProjectData projectData,
+            out double elevationFeet)
+        {
+            elevationFeet = 0;
+            if (doc == null || view == null || modelCurve == null)
+                return false;
+
+            long curveId = GetElementIdValue(modelCurve.Id);
+            SetElevationLineRecord? record = SetElevationDataService.Instance.FindRecord(projectData, curveId);
+            if (record != null &&
+                projectData != null &&
+                projectData.ElevationBase == elevationBase)
+            {
+                elevationFeet = record.ElevationFeet;
+                return true;
+            }
+
+            Curve curve = (modelCurve.Location as LocationCurve)?.Curve ?? modelCurve.GeometryCurve;
+            if (curve == null)
+                return false;
+
+            XYZ mid = curve.Evaluate(0.5, true);
+            if (mid == null)
+                return false;
+
+            var helper = new ElevationReferenceHelper(doc, view, elevationBase);
+            elevationFeet = helper.ModelZToDisplayElevation(mid.X, mid.Y, mid.Z);
+            return true;
+        }
+
+        private SetElevationLineResult ApplyAtElevation(
+            Document doc,
+            View view,
+            ModelCurve modelCurve,
+            SetElevationOptions options,
+            SetElevationProjectData projectData,
+            double elevationFeet,
+            int sequenceIndex,
+            bool advanceSequence)
+        {
             if (doc == null) throw new ArgumentNullException(nameof(doc));
             if (view == null) throw new ArgumentNullException(nameof(view));
             if (modelCurve == null) throw new ArgumentNullException(nameof(modelCurve));
             if (options == null) throw new ArgumentNullException(nameof(options));
             if (projectData == null) throw new ArgumentNullException(nameof(projectData));
 
-            double elevationFeet = options.StartElevationFeet + sequenceIndex * options.IncrementFeet;
             var elevationHelper = new ElevationReferenceHelper(doc, view, options.ElevationBase);
             var lineResult = new SetElevationLineResult
             {
@@ -96,7 +167,9 @@ namespace effetopo.Services
                 lineResult.TextNoteElementId = textNoteId;
                 UpsertRecord(projectData, modelCurve.Id, sequenceIndex, elevationFeet,
                     lineResult.FormattedElevation, textNoteId, options);
-                projectData.NextSequenceIndex = sequenceIndex + 1;
+
+                if (advanceSequence)
+                    projectData.NextSequenceIndex = sequenceIndex + 1;
 
                 lineResult.Success = true;
             }

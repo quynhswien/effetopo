@@ -2432,6 +2432,8 @@ namespace effetopo.Services
             BoundingBoxXYZ topoBbox = toposolid.get_BoundingBox(null);
             double rayOriginZ = (topoBbox?.Max.Z ?? level.Elevation) + 30.0;
             var spatialGrid = new SpatialGrid(topoTriangles, cellSize: 10.0);
+            var topoSlabVertices = ModifyTopoService.Instance.GetVertexSnapshots(toposolid);
+            View3D view3d = ModifyTopoService.ResolveView3D(doc, doc.ActiveView);
 
             double wallHeight = GetWallUnconnectedHeight(wall);
             bool flipped = wall.Flipped;
@@ -2451,8 +2453,16 @@ namespace effetopo.Services
             for (int i = 0; i < samplePoints.Count; i++)
             {
                 XYZ pt = samplePoints[i];
-                double? topoModelZ = GetElevationAtPointOptimized(
-                    new XYZ(pt.X, pt.Y, rayOriginZ), spatialGrid);
+                double? topoModelZ = GetToposolidSurfaceModelZAtXY(
+                    doc,
+                    toposolid,
+                    pt.X,
+                    pt.Y,
+                    rayOriginZ,
+                    spatialGrid,
+                    topoSlabVertices,
+                    view3d,
+                    out string elevationSource);
                 if (!topoModelZ.HasValue)
                 {
                     skippedSamples++;
@@ -2461,6 +2471,25 @@ namespace effetopo.Services
                 }
 
                 topoModelZs[i] = topoModelZ.Value;
+
+                if (i == 0)
+                {
+                    double? meshZ = GetElevationAtPointOptimized(
+                        new XYZ(pt.X, pt.Y, rayOriginZ), spatialGrid);
+                    double? slabZ = topoSlabVertices.Count > 0
+                        ? ModifyTopoService.GetModelSurfaceZ(doc, toposolid, topoSlabVertices, pt.X, pt.Y, 25.0)
+                        : null;
+                    double? faceZ = view3d != null
+                        ? ModifyTopoService.TryRaycastToposolidSurfaceZ(toposolid, view3d, pt.X, pt.Y)
+                        : null;
+                    Log.Information(
+                        "Wall follow sample 0 elevation: used={Used:F3} ft ({Source}), face={Face}, slab={Slab}, mesh={Mesh}",
+                        topoModelZ.Value,
+                        elevationSource,
+                        faceZ?.ToString("F3") ?? "n/a",
+                        slabZ?.ToString("F3") ?? "n/a",
+                        meshZ?.ToString("F3") ?? "n/a");
+                }
             }
 
             FillMissingWallTopoModelZs(topoModelZs, wall, levelElevation);
@@ -2472,8 +2501,8 @@ namespace effetopo.Services
                         samplePoints[0].X, samplePoints[0].Y, topoModelZs[0])
                     : topoModelZs[0];
                 Log.Information(
-                    "Wall follow sample 0: topo model Z={ModelZ:F3} ft, survey={Survey:F3} ft, top Z={Top:F3} ft",
-                    topoModelZs[0], surveyZ, topoModelZs[0] + wallHeight);
+                    "Wall follow sample 0: topo model Z={ModelZ:F3} ft, survey={Survey:F3} ft, base offset={Offset:F3} ft, top Z={Top:F3} ft",
+                    topoModelZs[0], surveyZ, topoModelZs[0] - levelElevation, topoModelZs[0] + wallHeight);
             }
 
             List<WallTopoProfileService.ArchivedWallParameter> archivedParams =
@@ -2547,7 +2576,7 @@ namespace effetopo.Services
                 {
                     if (WallTopoProfileService.TryEditWallElevationProfile(sourceWall, fullProfile))
                     {
-                        WallTopoProfileService.RestoreWallParameters(sourceWall, archivedParams);
+                        FinalizeWallFollowWall(sourceWall, archivedParams, 0, bottomModelZ[0]);
                         originalWallKept = true;
                         result.Add(sourceWall);
                         Log.Information(
@@ -2562,7 +2591,7 @@ namespace effetopo.Services
                         doc, fullProfile, wallTypeId, levelId, normal, structural);
                     if (profileWall != null)
                     {
-                        WallTopoProfileService.RestoreWallParameters(profileWall, archivedParams);
+                        FinalizeWallFollowWall(profileWall, archivedParams, 0, bottomModelZ[0]);
                         result.Add(profileWall);
                         Log.Information(
                             "Wall follow topo: created single profile wall with {Points} topo samples",
@@ -2590,7 +2619,9 @@ namespace effetopo.Services
                 if (segment == null)
                     continue;
 
-                WallTopoProfileService.RestoreWallParameters(segment, archivedParams);
+                FinalizeWallFollowWall(
+                    segment, archivedParams, 0,
+                    (bottomModelZ[i] + bottomModelZ[i + 1]) * 0.5);
                 result.Add(segment);
             }
 
@@ -2643,7 +2674,7 @@ namespace effetopo.Services
                     if (segment == null)
                         continue;
 
-                    WallTopoProfileService.RestoreWallParameters(segment, archivedParams);
+                    FinalizeWallFollowWall(segment, archivedParams, segmentOffset, (topo0 + topo1) * 0.5);
                     createdWalls.Add(segment);
                 }
                 catch (Exception ex)
@@ -2690,6 +2721,82 @@ namespace effetopo.Services
             catch
             {
                 return false;
+            }
+        }
+
+        /// <summary>
+        /// Toposolid surface model Z at XY: face raycast (visible surface), then slab interpolation, then mesh.
+        /// </summary>
+        private double? GetToposolidSurfaceModelZAtXY(
+            Document doc,
+            Toposolid toposolid,
+            double x,
+            double y,
+            double rayOriginZ,
+            SpatialGrid spatialGrid,
+            IList<ModifyTopoService.SculptVertexSnapshot> slabVertices,
+            View3D view3d,
+            out string source)
+        {
+            source = "none";
+
+            if (view3d != null)
+            {
+                double? faceZ = ModifyTopoService.TryRaycastToposolidSurfaceZ(toposolid, view3d, x, y);
+                if (faceZ.HasValue)
+                {
+                    source = "face-raycast";
+                    return faceZ.Value;
+                }
+            }
+
+            if (slabVertices != null && slabVertices.Count > 0)
+            {
+                double? slabZ = ModifyTopoService.GetModelSurfaceZ(doc, toposolid, slabVertices, x, y, 25.0);
+                if (slabZ.HasValue)
+                {
+                    source = "slab-interp";
+                    return slabZ.Value;
+                }
+            }
+
+            double? meshZ = GetElevationAtPointOptimized(new XYZ(x, y, rayOriginZ), spatialGrid);
+            if (meshZ.HasValue)
+            {
+                source = "mesh-raycast";
+                return meshZ.Value;
+            }
+
+            return null;
+        }
+
+        private static void FinalizeWallFollowWall(
+            Wall wall,
+            List<WallTopoProfileService.ArchivedWallParameter> archivedParams,
+            double baseOffsetFeet,
+            double expectedBottomModelZ)
+        {
+            if (wall == null)
+                return;
+
+            WallTopoProfileService.ResetWallBaseOffset(wall, baseOffsetFeet);
+            WallTopoProfileService.RestoreWallParameters(wall, archivedParams, preserveVerticalPlacement: true);
+
+            try
+            {
+                BoundingBoxXYZ bb = wall.get_BoundingBox(null);
+                Parameter offsetParam = wall.get_Parameter(BuiltInParameter.WALL_BASE_OFFSET);
+                double actualOffset = offsetParam != null && offsetParam.HasValue
+                    ? offsetParam.AsDouble()
+                    : double.NaN;
+                double actualMinZ = bb?.Min.Z ?? double.NaN;
+                Log.Information(
+                    "Wall follow verify: expected bottom model Z={Expected:F3} ft, bbox Min.Z={Actual:F3} ft, base offset={Offset:F3} ft",
+                    expectedBottomModelZ, actualMinZ, actualOffset);
+            }
+            catch (Exception ex)
+            {
+                Log.Debug("Wall follow verify logging failed: {Error}", ex.Message);
             }
         }
 
